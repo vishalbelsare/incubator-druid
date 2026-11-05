@@ -21,6 +21,7 @@ package org.apache.druid.indexing.kafka.supervisor;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import org.apache.druid.indexing.kafka.KafkaIndexTaskTuningConfig;
+import org.apache.druid.indexing.seekablestream.StreamingPartitionsSpec;
 import org.apache.druid.indexing.seekablestream.supervisor.SeekableStreamSupervisorTuningConfig;
 import org.apache.druid.segment.IndexSpec;
 import org.apache.druid.segment.incremental.AppendableIndexSpec;
@@ -29,12 +30,12 @@ import org.joda.time.Duration;
 import org.joda.time.Period;
 
 import javax.annotation.Nullable;
+import java.util.Objects;
 
 public class KafkaSupervisorTuningConfig extends KafkaIndexTaskTuningConfig
     implements SeekableStreamSupervisorTuningConfig
 {
   private final Integer workerThreads;
-  private final Integer chatThreads;
   private final Long chatRetries;
   private final Duration httpTimeout;
   private final Duration shutdownTimeout;
@@ -43,6 +44,9 @@ public class KafkaSupervisorTuningConfig extends KafkaIndexTaskTuningConfig
   public static KafkaSupervisorTuningConfig defaultConfig()
   {
     return new KafkaSupervisorTuningConfig(
+        null,
+        null,
+        null,
         null,
         null,
         null,
@@ -86,7 +90,6 @@ public class KafkaSupervisorTuningConfig extends KafkaIndexTaskTuningConfig
       @JsonProperty("resetOffsetAutomatically") Boolean resetOffsetAutomatically,
       @JsonProperty("segmentWriteOutMediumFactory") @Nullable SegmentWriteOutMediumFactory segmentWriteOutMediumFactory,
       @JsonProperty("workerThreads") Integer workerThreads,
-      @JsonProperty("chatThreads") Integer chatThreads,
       @JsonProperty("chatRetries") Long chatRetries,
       @JsonProperty("httpTimeout") Period httpTimeout,
       @JsonProperty("shutdownTimeout") Period shutdownTimeout,
@@ -94,7 +97,11 @@ public class KafkaSupervisorTuningConfig extends KafkaIndexTaskTuningConfig
       @JsonProperty("intermediateHandoffPeriod") Period intermediateHandoffPeriod,
       @JsonProperty("logParseExceptions") @Nullable Boolean logParseExceptions,
       @JsonProperty("maxParseExceptions") @Nullable Integer maxParseExceptions,
-      @JsonProperty("maxSavedParseExceptions") @Nullable Integer maxSavedParseExceptions
+      @JsonProperty("maxSavedParseExceptions") @Nullable Integer maxSavedParseExceptions,
+      @JsonProperty("numPersistThreads") @Nullable Integer numPersistThreads,
+      @JsonProperty("maxColumnsToMerge") @Nullable Integer maxColumnsToMerge,
+      @JsonProperty("releaseLocksOnHandoff") @Nullable Boolean releaseLocksOnHandoff,
+      @JsonProperty("streamingPartitionsSpec") @Nullable StreamingPartitionsSpec streamingPartitionsSpec
   )
   {
     super(
@@ -116,10 +123,13 @@ public class KafkaSupervisorTuningConfig extends KafkaIndexTaskTuningConfig
         intermediateHandoffPeriod,
         logParseExceptions,
         maxParseExceptions,
-        maxSavedParseExceptions
+        maxSavedParseExceptions,
+        numPersistThreads,
+        maxColumnsToMerge,
+        releaseLocksOnHandoff,
+        streamingPartitionsSpec
     );
     this.workerThreads = workerThreads;
-    this.chatThreads = chatThreads;
     this.chatRetries = (chatRetries != null ? chatRetries : DEFAULT_CHAT_RETRIES);
     this.httpTimeout = SeekableStreamSupervisorTuningConfig.defaultDuration(httpTimeout, DEFAULT_HTTP_TIMEOUT);
     this.shutdownTimeout = SeekableStreamSupervisorTuningConfig.defaultDuration(
@@ -137,13 +147,6 @@ public class KafkaSupervisorTuningConfig extends KafkaIndexTaskTuningConfig
   public Integer getWorkerThreads()
   {
     return workerThreads;
-  }
-
-  @Override
-  @JsonProperty
-  public Integer getChatThreads()
-  {
-    return chatThreads;
   }
 
   @Override
@@ -202,7 +205,6 @@ public class KafkaSupervisorTuningConfig extends KafkaIndexTaskTuningConfig
            ", resetOffsetAutomatically=" + isResetOffsetAutomatically() +
            ", segmentWriteOutMediumFactory=" + getSegmentWriteOutMediumFactory() +
            ", workerThreads=" + workerThreads +
-           ", chatThreads=" + chatThreads +
            ", chatRetries=" + chatRetries +
            ", httpTimeout=" + httpTimeout +
            ", shutdownTimeout=" + shutdownTimeout +
@@ -211,7 +213,31 @@ public class KafkaSupervisorTuningConfig extends KafkaIndexTaskTuningConfig
            ", logParseExceptions=" + isLogParseExceptions() +
            ", maxParseExceptions=" + getMaxParseExceptions() +
            ", maxSavedParseExceptions=" + getMaxSavedParseExceptions() +
+           ", numPersistThreads=" + getNumPersistThreads() +
            '}';
+  }
+
+  @Override
+  public boolean equals(Object o)
+  {
+    if (this == o) {
+      return true;
+    }
+    if (!super.equals(o)) {
+      return false;
+    }
+    KafkaSupervisorTuningConfig that = (KafkaSupervisorTuningConfig) o;
+    return Objects.equals(workerThreads, that.workerThreads)
+           && Objects.equals(chatRetries, that.chatRetries)
+           && Objects.equals(httpTimeout, that.httpTimeout)
+           && Objects.equals(shutdownTimeout, that.shutdownTimeout)
+           && Objects.equals(offsetFetchPeriod, that.offsetFetchPeriod);
+  }
+
+  @Override
+  public int hashCode()
+  {
+    return Objects.hash(super.hashCode(), workerThreads, chatRetries, httpTimeout, shutdownTimeout, offsetFetchPeriod);
   }
 
   @Override
@@ -236,7 +262,11 @@ public class KafkaSupervisorTuningConfig extends KafkaIndexTaskTuningConfig
         getIntermediateHandoffPeriod(),
         isLogParseExceptions(),
         getMaxParseExceptions(),
-        getMaxSavedParseExceptions()
+        getMaxSavedParseExceptions(),
+        getNumPersistThreads(),
+        getMaxColumnsToMerge(),
+        isReleaseLocksOnHandoff(),
+        getStreamingPartitionsSpec()
     );
   }
 }

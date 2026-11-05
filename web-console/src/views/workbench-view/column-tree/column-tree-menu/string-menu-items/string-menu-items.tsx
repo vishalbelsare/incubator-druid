@@ -18,10 +18,12 @@
 
 import { MenuItem } from '@blueprintjs/core';
 import { IconNames } from '@blueprintjs/icons';
-import { C, F, N, SqlExpression, SqlJoinPart, SqlQuery, T } from 'druid-query-toolkit';
+import type { SqlExpression, SqlQuery } from 'druid-query-toolkit';
+import { C, F, N, SqlJoinPart, SqlPlaceholder, T } from 'druid-query-toolkit';
+import type { JSX } from 'react';
 import React from 'react';
 
-import { EMPTY_LITERAL, prettyPrintSql } from '../../../../../utils';
+import { prettyPrintSql } from '../../../../../utils';
 import { getJoinColumns } from '../../column-tree';
 
 export interface StringMenuItemsProps {
@@ -33,9 +35,10 @@ export interface StringMenuItemsProps {
 }
 
 export const StringMenuItems = React.memo(function StringMenuItems(props: StringMenuItemsProps) {
-  function renderFilterMenu(): JSX.Element | undefined {
-    const { columnName, parsedQuery, onQueryChange } = props;
+  const { schema, table, columnName, parsedQuery, onQueryChange } = props;
+  const column = C(columnName);
 
+  function renderFilterMenu(): JSX.Element | undefined {
     function filterMenuItem(clause: SqlExpression, run = true) {
       return (
         <MenuItem
@@ -47,19 +50,17 @@ export const StringMenuItems = React.memo(function StringMenuItems(props: String
       );
     }
 
-    const column = C(columnName);
     return (
       <MenuItem icon={IconNames.FILTER} text="Filter">
         {filterMenuItem(column.isNotNull())}
-        {filterMenuItem(column.equal(EMPTY_LITERAL), false)}
-        {filterMenuItem(column.like(EMPTY_LITERAL), false)}
-        {filterMenuItem(F('REGEXP_LIKE', column, EMPTY_LITERAL), false)}
+        {filterMenuItem(column.equal(SqlPlaceholder.PLACEHOLDER), false)}
+        {filterMenuItem(column.like(SqlPlaceholder.PLACEHOLDER), false)}
+        {filterMenuItem(F('REGEXP_LIKE', column, SqlPlaceholder.PLACEHOLDER), false)}
       </MenuItem>
     );
   }
 
   function renderRemoveFilter(): JSX.Element | undefined {
-    const { columnName, parsedQuery, onQueryChange } = props;
     if (!parsedQuery.getEffectiveWhereExpression().containsColumnName(columnName)) return;
 
     return (
@@ -74,7 +75,6 @@ export const StringMenuItems = React.memo(function StringMenuItems(props: String
   }
 
   function renderRemoveGroupBy(): JSX.Element | undefined {
-    const { columnName, parsedQuery, onQueryChange } = props;
     const groupedSelectIndexes = parsedQuery.getGroupedSelectIndexesForColumn(columnName);
     if (!groupedSelectIndexes.length) return;
 
@@ -90,7 +90,6 @@ export const StringMenuItems = React.memo(function StringMenuItems(props: String
   }
 
   function renderGroupByMenu(): JSX.Element | undefined {
-    const { columnName, parsedQuery, onQueryChange } = props;
     if (!parsedQuery.hasGroupBy()) return;
 
     function groupByMenuItem(ex: SqlExpression, alias?: string) {
@@ -110,7 +109,6 @@ export const StringMenuItems = React.memo(function StringMenuItems(props: String
       );
     }
 
-    const column = C(columnName);
     return (
       <MenuItem icon={IconNames.GROUP_OBJECTS} text="Group by">
         {groupByMenuItem(column)}
@@ -121,7 +119,6 @@ export const StringMenuItems = React.memo(function StringMenuItems(props: String
   }
 
   function renderAggregateMenu(): JSX.Element | undefined {
-    const { columnName, parsedQuery, onQueryChange } = props;
     if (!parsedQuery.hasGroupBy()) return;
 
     function aggregateMenuItem(ex: SqlExpression, alias: string, run = true) {
@@ -135,22 +132,21 @@ export const StringMenuItems = React.memo(function StringMenuItems(props: String
       );
     }
 
-    const column = C(columnName);
     return (
       <MenuItem icon={IconNames.FUNCTION} text="Aggregate">
         {aggregateMenuItem(F.countDistinct(column), `dist_${columnName}`)}
         {aggregateMenuItem(
-          F.count().addWhereExpression(column.equal(EMPTY_LITERAL)),
+          F.count().addWhere(column.equal(SqlPlaceholder.PLACEHOLDER)),
           `filtered_dist_${columnName}`,
           false,
         )}
-        {aggregateMenuItem(F('LATEST', column, 100), `latest_${columnName}`)}
+        {aggregateMenuItem(F('ANY_VALUE', column), columnName)}
+        {aggregateMenuItem(F('LATEST', column), `latest_${columnName}`)}
       </MenuItem>
     );
   }
 
   function renderJoinMenu(): JSX.Element | undefined {
-    const { schema, table, columnName, parsedQuery, onQueryChange } = props;
     if (schema !== 'lookup' || !parsedQuery) return;
     const firstTableName = parsedQuery.getFirstTableName();
     if (!firstTableName) return;
@@ -210,7 +206,6 @@ export const StringMenuItems = React.memo(function StringMenuItems(props: String
   }
 
   function renderRemoveJoin(): JSX.Element | undefined {
-    const { schema, parsedQuery, onQueryChange } = props;
     if (schema !== 'lookup' || !parsedQuery) return;
     if (!parsedQuery.hasJoin()) return;
 

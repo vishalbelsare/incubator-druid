@@ -16,19 +16,18 @@
  * limitations under the License.
  */
 
-import { shallow } from 'enzyme';
-import React from 'react';
+import { render } from '@testing-library/react';
 
 import { QueryState } from '../../../utils';
 
+import type { SupervisorStatisticsTableRow } from './supervisor-statistics-table';
 import {
   normalizeSupervisorStatisticsResults,
   SupervisorStatisticsTable,
-  SupervisorStatisticsTableRow,
 } from './supervisor-statistics-table';
 
 let supervisorStatisticsState: QueryState<SupervisorStatisticsTableRow[]> = QueryState.INIT;
-jest.mock('../../../hooks', () => {
+jest.mock('../../../hooks/use-query-manager', () => {
   return {
     useQueryManager: () => [supervisorStatisticsState],
   };
@@ -40,19 +39,22 @@ describe('SupervisorStatisticsTable', () => {
   }
 
   it('matches snapshot on init', () => {
-    expect(shallow(makeSupervisorStatisticsTable())).toMatchSnapshot();
+    const { container } = render(makeSupervisorStatisticsTable());
+    expect(container.firstChild).toMatchSnapshot();
   });
 
   it('matches snapshot on loading', () => {
     supervisorStatisticsState = QueryState.LOADING;
 
-    expect(shallow(makeSupervisorStatisticsTable())).toMatchSnapshot();
+    const { container } = render(makeSupervisorStatisticsTable());
+    expect(container.firstChild).toMatchSnapshot();
   });
 
   it('matches snapshot on error', () => {
     supervisorStatisticsState = new QueryState({ error: new Error('test error') });
 
-    expect(shallow(makeSupervisorStatisticsTable())).toMatchSnapshot();
+    const { container } = render(makeSupervisorStatisticsTable());
+    expect(container.firstChild).toMatchSnapshot();
   });
 
   it('matches snapshot on no data', () => {
@@ -60,7 +62,8 @@ describe('SupervisorStatisticsTable', () => {
       data: normalizeSupervisorStatisticsResults({}),
     });
 
-    expect(shallow(makeSupervisorStatisticsTable())).toMatchSnapshot();
+    const { container } = render(makeSupervisorStatisticsTable());
+    expect(container.firstChild).toMatchSnapshot();
   });
 
   it('matches snapshot on some data', () => {
@@ -72,18 +75,21 @@ describe('SupervisorStatisticsTable', () => {
               buildSegments: {
                 '5m': {
                   processed: 3.5455993615040584,
+                  processedBytes: 10,
                   unparseable: 0,
                   thrownAway: 0,
                   processedWithError: 0,
                 },
                 '15m': {
                   processed: 5.544749689510444,
+                  processedBytes: 20,
                   unparseable: 0,
                   thrownAway: 0,
                   processedWithError: 0,
                 },
                 '1m': {
                   processed: 4.593670088770785,
+                  processedBytes: 30,
                   unparseable: 0,
                   thrownAway: 0,
                   processedWithError: 0,
@@ -93,6 +99,7 @@ describe('SupervisorStatisticsTable', () => {
             totals: {
               buildSegments: {
                 processed: 7516,
+                processedBytes: 60,
                 processedWithError: 0,
                 thrownAway: 0,
                 unparseable: 0,
@@ -103,6 +110,7 @@ describe('SupervisorStatisticsTable', () => {
       }),
     });
 
-    expect(shallow(makeSupervisorStatisticsTable())).toMatchSnapshot();
+    const { container } = render(makeSupervisorStatisticsTable());
+    expect(container.firstChild).toMatchSnapshot();
   });
 });

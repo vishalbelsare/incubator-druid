@@ -22,64 +22,114 @@ package org.apache.druid.frame.key;
 import com.google.common.collect.ImmutableList;
 import nl.jqno.equalsverifier.EqualsVerifier;
 import org.apache.druid.java.util.common.guava.Comparators;
-import org.junit.Assert;
-import org.junit.Test;
+import org.apache.druid.segment.column.ColumnType;
+import org.apache.druid.segment.column.RowSignature;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
+
+import java.util.Collections;
 
 public class ClusterByTest
 {
   @Test
   public void test_keyComparator()
   {
-    final ImmutableList<SortColumn> sortColumns = ImmutableList.of(
-        new SortColumn("x", false),
-        new SortColumn("y", false)
+    final ImmutableList<KeyColumn> keyColumns = ImmutableList.of(
+        new KeyColumn("x", KeyOrder.ASCENDING),
+        new KeyColumn("y", KeyOrder.ASCENDING)
     );
 
-    Assert.assertEquals(
-        RowKeyComparator.create(sortColumns),
-        new ClusterBy(sortColumns, 1).keyComparator()
+    final RowSignature rowSignature = RowSignature.builder()
+                                                  .add("x", ColumnType.LONG)
+                                                  .add("y", ColumnType.LONG)
+                                                  .build();
+
+    Assertions.assertEquals(
+        RowKeyComparator.create(keyColumns, rowSignature),
+        new ClusterBy(keyColumns, 1).keyComparator(rowSignature)
     );
   }
 
   @Test
   public void test_bucketComparator_noKey()
   {
-    Assert.assertSame(Comparators.alwaysEqual(), ClusterBy.none().bucketComparator());
+    Assertions.assertSame(Comparators.alwaysEqual(), ClusterBy.none().bucketComparator(RowSignature.empty()));
   }
 
   @Test
   public void test_bucketComparator_noBucketKey()
   {
-    Assert.assertSame(
+    RowSignature rowSignature = RowSignature.builder()
+                                            .add("x", ColumnType.LONG)
+                                            .add("y", ColumnType.LONG)
+                                            .build();
+    Assertions.assertSame(
         Comparators.alwaysEqual(),
         new ClusterBy(
             ImmutableList.of(
-                new SortColumn("x", false),
-                new SortColumn("y", false)
+                new KeyColumn("x", KeyOrder.ASCENDING),
+                new KeyColumn("y", KeyOrder.ASCENDING)
             ),
             0
-        ).bucketComparator()
+        ).bucketComparator(rowSignature)
     );
   }
 
   @Test
   public void test_bucketComparator_withBucketKey()
   {
-    Assert.assertEquals(
-        RowKeyComparator.create(ImmutableList.of(new SortColumn("x", false))),
+    RowSignature rowSignature = RowSignature.builder()
+                                            .add("x", ColumnType.LONG)
+                                            .add("y", ColumnType.LONG)
+                                            .build();
+    Assertions.assertEquals(
+        RowKeyComparator.create(
+            ImmutableList.of(new KeyColumn("x", KeyOrder.ASCENDING)),
+            rowSignature
+
+        ),
         new ClusterBy(
             ImmutableList.of(
-                new SortColumn("x", false),
-                new SortColumn("y", false)
+                new KeyColumn("x", KeyOrder.ASCENDING),
+                new KeyColumn("y", KeyOrder.ASCENDING)
             ),
             1
-        ).bucketComparator()
+        ).bucketComparator(rowSignature)
     );
+  }
+
+  @Test
+  public void test_sortable()
+  {
+    Assertions.assertFalse(
+        new ClusterBy(
+            ImmutableList.of(
+                new KeyColumn("x", KeyOrder.NONE),
+                new KeyColumn("y", KeyOrder.NONE)
+            ),
+            0
+        ).sortable()
+    );
+
+    Assertions.assertTrue(
+        new ClusterBy(
+            ImmutableList.of(
+                new KeyColumn("x", KeyOrder.ASCENDING),
+                new KeyColumn("y", KeyOrder.ASCENDING)
+            ),
+            0
+        ).sortable()
+    );
+
+    Assertions.assertTrue(new ClusterBy(Collections.emptyList(), 0).sortable());
   }
 
   @Test
   public void test_equals()
   {
-    EqualsVerifier.forClass(ClusterBy.class).usingGetClass().verify();
+    EqualsVerifier.forClass(ClusterBy.class)
+                  .usingGetClass()
+                  .withIgnoredFields("sortable")
+                  .verify();
   }
 }

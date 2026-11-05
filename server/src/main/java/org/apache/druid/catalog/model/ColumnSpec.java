@@ -24,8 +24,10 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonInclude.Include;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.base.Strings;
+import org.apache.druid.catalog.model.ModelProperties.PropertyDefn;
 import org.apache.druid.guice.annotations.UnstableApi;
 import org.apache.druid.java.util.common.IAE;
+import org.apache.druid.segment.column.ColumnType;
 
 import javax.annotation.Nullable;
 
@@ -34,18 +36,11 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Specification of table columns. Columns have multiple types
- * represented via the type field.
+ * Specification of table columns.
  */
 @UnstableApi
 public class ColumnSpec
 {
-  /**
-   * The type of column spec (not the column data type). For example, in a
-   * cube, dimensions and measures have distinct sets of properties.
-   */
-  private final String type;
-
   /**
    * The name of the column as known to the SQL layer. At present, there is no
    * support for column aliases, so this is also the column name as physically
@@ -54,14 +49,10 @@ public class ColumnSpec
   private final String name;
 
   /**
-   * The data type of the column expressed as a supported SQL type. The data type here must
-   * directly match a Druid storage type. So, {@code BIGINT} for {code long}, say.
-   * This usage does not support Druid's usual "fudging": one cannot use {@code INTEGER}
-   * to mean {@code long}. The type will likely encode complex and aggregation types
-   * in the future, though that is not yet supported. The set of valid mappings is
-   * defined in the {@link Columns} class.
+   * The data type of the column expressed as a supported Druid type. The data type here must
+   * directly match a Druid storage type.
    */
-  private final String sqlType;
+  private final String dataType;
 
   /**
    * Properties for the column. At present, these are all user and application defined.
@@ -73,22 +64,19 @@ public class ColumnSpec
 
   @JsonCreator
   public ColumnSpec(
-      @JsonProperty("type")final String type,
       @JsonProperty("name")final String name,
-      @JsonProperty("sqlType") @Nullable final String sqlType,
+      @JsonProperty("dataType") @Nullable final String dataType,
       @JsonProperty("properties") @Nullable final Map<String, Object> properties
   )
   {
-    this.type = type;
     this.name = name;
-    this.sqlType = sqlType;
+    this.dataType = dataType;
     this.properties = properties == null ? Collections.emptyMap() : properties;
   }
 
-  @JsonProperty("type")
-  public String type()
+  public ColumnSpec(ColumnSpec from)
   {
-    return type;
+    this(from.name, from.dataType, from.properties);
   }
 
   @JsonProperty("name")
@@ -97,11 +85,11 @@ public class ColumnSpec
     return name;
   }
 
-  @JsonProperty("sqlType")
+  @JsonProperty("dataType")
   @JsonInclude(Include.NON_NULL)
-  public String sqlType()
+  public String dataType()
   {
-    return sqlType;
+    return dataType;
   }
 
   @JsonProperty("properties")
@@ -113,12 +101,48 @@ public class ColumnSpec
 
   public void validate()
   {
-    if (Strings.isNullOrEmpty(type)) {
-      throw new IAE("Column type is required");
-    }
     if (Strings.isNullOrEmpty(name)) {
       throw new IAE("Column name is required");
     }
+    if (Columns.isTimeColumn(name)) {
+      // Any spelling that resolves to a LONG is fine: the time column is written as TIMESTAMP in SQL and as LONG
+      // natively, and both mean the same stored type.
+      if (dataType != null && !ColumnType.LONG.equals(Columns.druidTypeFromString(dataType))) {
+        throw new IAE(
+            "[%s] column must have a type that resolves to [%s], such as [%s] or [%s], or no type. Found [%s]",
+            name,
+            Columns.LONG,
+            Columns.SQL_TIMESTAMP,
+            Columns.SQL_BIGINT,
+            dataType
+        );
+      }
+    }
+    // Validate type in the next PR
+  }
+
+  /**
+   * Merges an updated version of this column with an existing version.
+   * <p>
+   * The name cannot be changed (it is what links the existing column and the
+   * update). The SQL type will be that provided in the update, if non-null, else
+   * the original type. Properties are merged using standard rules: those in the
+   * update take precedence. Null values in the update remove the existing property,
+   * non-null values update the property. Any properties in the update but not in
+   * the existing set, are inserted (if non-null).
+   */
+  public ColumnSpec merge(
+      final Map<String, PropertyDefn<?>> columnProperties,
+      final ColumnSpec update
+  )
+  {
+    String revisedType = update.dataType() == null ? dataType() : update.dataType();
+    Map<String, Object> revisedProps = CatalogUtils.mergeProperties(
+        columnProperties,
+        properties(),
+        update.properties()
+    );
+    return new ColumnSpec(name(), revisedType, revisedProps);
   }
 
   @Override
@@ -137,9 +161,8 @@ public class ColumnSpec
       return false;
     }
     ColumnSpec other = (ColumnSpec) o;
-    return Objects.equals(this.type, other.type)
-        && Objects.equals(this.name, other.name)
-        && Objects.equals(this.sqlType, other.sqlType)
+    return Objects.equals(this.name, other.name)
+        && Objects.equals(this.dataType, other.dataType)
         && Objects.equals(this.properties, other.properties);
   }
 
@@ -147,9 +170,8 @@ public class ColumnSpec
   public int hashCode()
   {
     return Objects.hash(
-        type,
         name,
-        sqlType,
+        dataType,
         properties
     );
   }

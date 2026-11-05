@@ -21,12 +21,12 @@ package org.apache.druid.segment.serde;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.apache.druid.common.config.NullHandling;
 import org.apache.druid.jackson.DefaultObjectMapper;
 import org.apache.druid.segment.ColumnValueSelector;
 import org.apache.druid.segment.DimensionSelector;
 import org.apache.druid.segment.SimpleAscendingOffset;
 import org.apache.druid.segment.column.BaseColumn;
+import org.apache.druid.segment.column.BaseColumnHolder;
 import org.apache.druid.segment.column.ColumnBuilder;
 import org.apache.druid.segment.column.ColumnCapabilities;
 import org.apache.druid.segment.column.ColumnConfig;
@@ -42,51 +42,51 @@ import org.apache.druid.segment.vector.SingleValueDimensionVectorSelector;
 import org.apache.druid.segment.vector.VectorObjectSelector;
 import org.apache.druid.segment.vector.VectorValueSelector;
 import org.apache.druid.testing.InitializedNullHandlingTest;
-import org.junit.Assert;
-import org.junit.Test;
-import org.mockito.Mockito;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
 
 public class NullColumnPartSerdeTest extends InitializedNullHandlingTest
 {
+  private static final ByteBuffer EMPTY_BUFFER = ByteBuffer.allocate(0);
+
   @Test
   public void testSerde() throws JsonProcessingException
   {
     final ObjectMapper mapper = new DefaultObjectMapper();
 
-    final NullColumnPartSerde partSerde = new NullColumnPartSerde(10, new RoaringBitmapSerdeFactory(null));
+    final NullColumnPartSerde partSerde = new NullColumnPartSerde(10, RoaringBitmapSerdeFactory.getInstance());
     final String json = mapper.writeValueAsString(partSerde);
-    Assert.assertEquals(partSerde, mapper.readValue(json, ColumnPartSerde.class));
+    Assertions.assertEquals(partSerde, mapper.readValue(json, ColumnPartSerde.class));
   }
 
   @Test
   public void testDeserializer()
   {
-    final NullColumnPartSerde partSerde = new NullColumnPartSerde(10, new RoaringBitmapSerdeFactory(null));
+    final NullColumnPartSerde partSerde = new NullColumnPartSerde(10, RoaringBitmapSerdeFactory.getInstance());
     final ColumnBuilder builder = new ColumnBuilder().setType(ValueType.DOUBLE);
-    partSerde.getDeserializer().read(Mockito.mock(ByteBuffer.class), builder, Mockito.mock(ColumnConfig.class));
+    partSerde.getDeserializer().read(EMPTY_BUFFER, builder, ColumnConfig.DEFAULT, null);
     final ColumnCapabilities columnCapabilities = builder.build().getCapabilities();
-    Assert.assertTrue(Types.is(columnCapabilities, ValueType.DOUBLE));
-    Assert.assertTrue(columnCapabilities.hasNulls().isTrue());
-    Assert.assertTrue(columnCapabilities.hasMultipleValues().isFalse());
-    Assert.assertTrue(columnCapabilities.isFilterable());
-    Assert.assertTrue(columnCapabilities.hasBitmapIndexes());
-    Assert.assertTrue(columnCapabilities.isDictionaryEncoded().isTrue());
-    Assert.assertTrue(columnCapabilities.areDictionaryValuesSorted().isTrue());
-    Assert.assertTrue(columnCapabilities.areDictionaryValuesUnique().isTrue());
+    Assertions.assertTrue(Types.is(columnCapabilities, ValueType.DOUBLE));
+    Assertions.assertTrue(columnCapabilities.hasNulls().isTrue());
+    Assertions.assertTrue(columnCapabilities.hasMultipleValues().isFalse());
+    Assertions.assertTrue(columnCapabilities.hasBitmapIndexes());
+    Assertions.assertTrue(columnCapabilities.isDictionaryEncoded().isTrue());
+    Assertions.assertTrue(columnCapabilities.areDictionaryValuesSorted().isTrue());
+    Assertions.assertTrue(columnCapabilities.areDictionaryValuesUnique().isTrue());
   }
 
   @Test
   public void testDimensionSelector()
   {
-    final NullColumnPartSerde partSerde = new NullColumnPartSerde(10, new RoaringBitmapSerdeFactory(null));
+    final NullColumnPartSerde partSerde = new NullColumnPartSerde(10, RoaringBitmapSerdeFactory.getInstance());
     final ColumnBuilder builder = new ColumnBuilder().setType(ValueType.STRING);
-    partSerde.getDeserializer().read(Mockito.mock(ByteBuffer.class), builder, Mockito.mock(ColumnConfig.class));
-    ColumnHolder holder = builder.build();
+    partSerde.getDeserializer().read(EMPTY_BUFFER, builder, ColumnConfig.DEFAULT, null);
+    BaseColumnHolder holder = builder.build();
 
     BaseColumn theColumn = holder.getColumn();
-    Assert.assertTrue(theColumn instanceof DictionaryEncodedColumn);
+    Assertions.assertInstanceOf(DictionaryEncodedColumn.class, theColumn);
     DictionaryEncodedColumn dictionaryEncodedColumn = (DictionaryEncodedColumn) theColumn;
 
     ReadableOffset offset = new SimpleAscendingOffset(10);
@@ -94,21 +94,21 @@ public class NullColumnPartSerdeTest extends InitializedNullHandlingTest
         offset,
         null
     );
-    Assert.assertNull(dimensionSelector.getObject());
-    Assert.assertEquals(1, dimensionSelector.getRow().size());
-    Assert.assertEquals(0, dimensionSelector.getRow().get(0));
+    Assertions.assertNull(dimensionSelector.getObject());
+    Assertions.assertEquals(1, dimensionSelector.getRow().size());
+    Assertions.assertEquals(0, dimensionSelector.getRow().get(0));
   }
 
   @Test
   public void testDimensionVectorSelector()
   {
-    final NullColumnPartSerde partSerde = new NullColumnPartSerde(10, new RoaringBitmapSerdeFactory(null));
+    final NullColumnPartSerde partSerde = new NullColumnPartSerde(10, RoaringBitmapSerdeFactory.getInstance());
     final ColumnBuilder builder = new ColumnBuilder().setType(ValueType.STRING);
-    partSerde.getDeserializer().read(Mockito.mock(ByteBuffer.class), builder, Mockito.mock(ColumnConfig.class));
-    ColumnHolder holder = builder.build();
+    partSerde.getDeserializer().read(EMPTY_BUFFER, builder, ColumnConfig.DEFAULT, null);
+    BaseColumnHolder holder = builder.build();
 
     BaseColumn theColumn = holder.getColumn();
-    Assert.assertTrue(theColumn instanceof DictionaryEncodedColumn);
+    Assertions.assertInstanceOf(DictionaryEncodedColumn.class, theColumn);
     DictionaryEncodedColumn dictionaryEncodedColumn = (DictionaryEncodedColumn) theColumn;
 
     ReadableVectorOffset vectorOffset = new NoFilterVectorOffset(8, 0, 10);
@@ -118,11 +118,11 @@ public class NullColumnPartSerdeTest extends InitializedNullHandlingTest
 
     int[] rowVector = vectorSelector.getRowVector();
     for (int i = 0; i < vectorOffset.getCurrentVectorSize(); i++) {
-      Assert.assertEquals(0, rowVector[i]);
-      Assert.assertNull(vectorSelector.lookupName(rowVector[i]));
+      Assertions.assertEquals(0, rowVector[i]);
+      Assertions.assertNull(vectorSelector.lookupName(rowVector[i]));
     }
 
-    Assert.assertThrows(UnsupportedOperationException.class, () -> {
+    Assertions.assertThrows(UnsupportedOperationException.class, () -> {
       dictionaryEncodedColumn.makeMultiValueDimensionVectorSelector(vectorOffset);
     });
   }
@@ -130,10 +130,10 @@ public class NullColumnPartSerdeTest extends InitializedNullHandlingTest
   @Test
   public void testVectorObjectSelector()
   {
-    final NullColumnPartSerde partSerde = new NullColumnPartSerde(10, new RoaringBitmapSerdeFactory(null));
+    final NullColumnPartSerde partSerde = new NullColumnPartSerde(10, RoaringBitmapSerdeFactory.getInstance());
     final ColumnBuilder builder = new ColumnBuilder().setType(ValueType.STRING);
-    partSerde.getDeserializer().read(Mockito.mock(ByteBuffer.class), builder, Mockito.mock(ColumnConfig.class));
-    ColumnHolder holder = builder.build();
+    partSerde.getDeserializer().read(EMPTY_BUFFER, builder, ColumnConfig.DEFAULT, null);
+    BaseColumnHolder holder = builder.build();
 
     BaseColumn theColumn = holder.getColumn();
 
@@ -142,38 +142,34 @@ public class NullColumnPartSerdeTest extends InitializedNullHandlingTest
     VectorObjectSelector objectSelector = theColumn.makeVectorObjectSelector(vectorOffset);
     Object[] vector = objectSelector.getObjectVector();
     for (int i = 0; i < vectorOffset.getCurrentVectorSize(); i++) {
-      Assert.assertNull(vector[i]);
+      Assertions.assertNull(vector[i]);
     }
   }
 
   @Test
   public void testColumnValueSelector()
   {
-    final NullColumnPartSerde partSerde = new NullColumnPartSerde(10, new RoaringBitmapSerdeFactory(null));
+    final NullColumnPartSerde partSerde = new NullColumnPartSerde(10, RoaringBitmapSerdeFactory.getInstance());
     final ColumnBuilder builder = new ColumnBuilder().setType(ValueType.DOUBLE);
-    partSerde.getDeserializer().read(Mockito.mock(ByteBuffer.class), builder, Mockito.mock(ColumnConfig.class));
-    ColumnHolder holder = builder.build();
+    partSerde.getDeserializer().read(EMPTY_BUFFER, builder, ColumnConfig.DEFAULT, null);
+    BaseColumnHolder holder = builder.build();
 
     BaseColumn theColumn = holder.getColumn();
 
     ReadableOffset offset = new SimpleAscendingOffset(10);
     ColumnValueSelector valueSelector = theColumn.makeColumnValueSelector(offset);
 
-    if (NullHandling.sqlCompatible()) {
-      Assert.assertTrue(valueSelector.isNull());
-    } else {
-      Assert.assertFalse(valueSelector.isNull());
-    }
-    Assert.assertEquals(0.0, valueSelector.getDouble(), 0.0);
+    Assertions.assertTrue(valueSelector.isNull());
+    Assertions.assertEquals(0.0, valueSelector.getDouble(), 0.0);
   }
 
   @Test
   public void testVectorValueSelector()
   {
-    final NullColumnPartSerde partSerde = new NullColumnPartSerde(10, new RoaringBitmapSerdeFactory(null));
+    final NullColumnPartSerde partSerde = new NullColumnPartSerde(10, RoaringBitmapSerdeFactory.getInstance());
     final ColumnBuilder builder = new ColumnBuilder().setType(ValueType.DOUBLE);
-    partSerde.getDeserializer().read(Mockito.mock(ByteBuffer.class), builder, Mockito.mock(ColumnConfig.class));
-    ColumnHolder holder = builder.build();
+    partSerde.getDeserializer().read(EMPTY_BUFFER, builder, ColumnConfig.DEFAULT, null);
+    BaseColumnHolder holder = builder.build();
 
     BaseColumn theColumn = holder.getColumn();
     ReadableVectorOffset vectorOffset = new NoFilterVectorOffset(8, 0, 10);
@@ -182,22 +178,18 @@ public class NullColumnPartSerdeTest extends InitializedNullHandlingTest
     double[] vector = selector.getDoubleVector();
     boolean[] nulls = selector.getNullVector();
     for (int i = 0; i < vectorOffset.getCurrentVectorSize(); i++) {
-      Assert.assertEquals(0.0, vector[i], 0.0);
-      if (NullHandling.sqlCompatible()) {
-        Assert.assertTrue(nulls[i]);
-      } else {
-        Assert.assertFalse(nulls[i]);
-      }
+      Assertions.assertEquals(0.0, vector[i], 0.0);
+      Assertions.assertTrue(nulls[i]);
     }
   }
 
   @Test
   public void testIndexSupplier()
   {
-    final NullColumnPartSerde partSerde = new NullColumnPartSerde(10, new RoaringBitmapSerdeFactory(null));
+    final NullColumnPartSerde partSerde = new NullColumnPartSerde(10, RoaringBitmapSerdeFactory.getInstance());
     final ColumnBuilder builder = new ColumnBuilder().setType(ValueType.DOUBLE);
-    partSerde.getDeserializer().read(Mockito.mock(ByteBuffer.class), builder, Mockito.mock(ColumnConfig.class));
+    partSerde.getDeserializer().read(EMPTY_BUFFER, builder, ColumnConfig.DEFAULT, null);
     ColumnHolder holder = builder.build();
-    Assert.assertNull(holder.getIndexSupplier());
+    Assertions.assertNull(holder.getIndexSupplier());
   }
 }

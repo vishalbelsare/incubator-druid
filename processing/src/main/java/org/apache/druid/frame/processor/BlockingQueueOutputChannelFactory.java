@@ -38,17 +38,29 @@ public class BlockingQueueOutputChannelFactory implements OutputChannelFactory
   public OutputChannel openChannel(final int partitionNumber)
   {
     final BlockingQueueFrameChannel channel = BlockingQueueFrameChannel.minimal();
-    return OutputChannel.pair(
+    return OutputChannel.immediatelyReadablePair(
         channel.writable(),
         ArenaMemoryAllocator.createOnHeap(frameSize),
-        channel::readable,
+        channel.readable(),
         partitionNumber
     );
+  }
+
+  @Override
+  public PartitionedOutputChannel openPartitionedChannel(String name, boolean deleteAfterRead)
+  {
+    throw new UnsupportedOperationException("Opening in-memory partitioned channels is not supported");
   }
 
   @Override
   public OutputChannel openNilChannel(final int partitionNumber)
   {
     return OutputChannel.nil(partitionNumber);
+  }
+
+  @Override
+  public boolean isBuffered()
+  {
+    return false;
   }
 }

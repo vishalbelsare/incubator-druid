@@ -1,0 +1,806 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+package org.apache.druid.timeline;
+
+import com.fasterxml.jackson.annotation.JacksonInject;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Preconditions;
+import com.google.common.base.Strings;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Interner;
+import com.google.common.collect.Interners;
+import com.google.inject.Inject;
+import it.unimi.dsi.fastutil.objects.Object2ObjectArrayMap;
+import org.apache.druid.guice.annotations.PublicApi;
+import org.apache.druid.jackson.CommaListJoinDeserializer;
+import org.apache.druid.jackson.CommaListJoinSerializer;
+import org.apache.druid.java.util.common.Intervals;
+import org.apache.druid.query.SegmentDescriptor;
+import org.apache.druid.segment.VirtualColumn;
+import org.apache.druid.segment.VirtualColumns;
+import org.apache.druid.timeline.partition.NumberedShardSpec;
+import org.apache.druid.timeline.partition.ShardSpec;
+import org.joda.time.Interval;
+
+import javax.annotation.Nullable;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+
+/**
+ * Metadata of Druid's data segment. An immutable object.
+ * <p>
+ * DataSegment's equality ({@link #equals}/{@link #hashCode}) and {@link #compareTo} methods consider only the
+ * {@link SegmentId} of the segment.
+ */
+@PublicApi
+public class DataSegment implements Comparable<DataSegment>, Overshadowable<DataSegment>
+{
+
+  public static final String TOMBSTONE_LOADSPEC_TYPE = "tombstone";
+
+  public static Interner<String> stringInterner()
+  {
+    return STRING_INTERNER;
+  }
+
+  /**
+   * Shared canonical interner for {@link VirtualColumn} instances embedded in segment-side
+   * metadata that lives in broker/coordinator memory. Used by callers that carry virtual columns through
+   * {@link DataSegment}'s wire form (clustering virtual columns on {@link ClusterGroupTuples},
+   * {@link org.apache.druid.timeline.partition.BaseDimensionRangeShardSpec}'s range-clustering virtual columns) so
+   * identical VC definitions across segments collapse to a single instance in memory. Callers holding a whole
+   * {@link VirtualColumns} should use {@link #internVirtualColumns}.
+   */
+  public static Interner<VirtualColumn> virtualColumnInterner()
+  {
+    return VIRTUAL_COLUMN_INTERNER;
+  }
+
+  /**
+   * Returns a shared {@link VirtualColumns} instance equal to the given one, so segments with the same virtual column
+   * definitions reuse one object in memory instead of each holding its own copy. Returns {@link VirtualColumns#EMPTY}
+   * if the input is null or empty.
+   */
+  public static VirtualColumns internVirtualColumns(@Nullable VirtualColumns virtualColumns)
+  {
+    if (virtualColumns == null || virtualColumns.isEmpty()) {
+      return VirtualColumns.EMPTY;
+    }
+    return VIRTUAL_COLUMNS_INTERNER.intern(
+        VirtualColumns.create(
+            Arrays.stream(virtualColumns.getVirtualColumns())
+                  .map(VIRTUAL_COLUMN_INTERNER::intern)
+                  .toList()
+        )
+    );
+  }
+
+  /*
+   * The difference between this class and org.apache.druid.segment.Segment is that this class contains the segment
+   * metadata only, while org.apache.druid.segment.Segment represents the actual body of segment data, queryable.
+   */
+
+  /**
+   * This class is needed for optional injection of pruneLoadSpec and pruneLastCompactionState, see
+   * github.com/google/guice/wiki/FrequentlyAskedQuestions#how-can-i-inject-optional-parameters-into-a-constructor
+   */
+  @VisibleForTesting
+  public static class PruneSpecsHolder
+  {
+    @VisibleForTesting
+    public static final PruneSpecsHolder DEFAULT = new PruneSpecsHolder();
+
+    @Inject(optional = true)
+    @PruneLoadSpec
+    boolean pruneLoadSpec = false;
+
+    @Inject(optional = true)
+    @PruneLastCompactionState
+    boolean pruneLastCompactionState = false;
+  }
+
+  private static final Interner<String> STRING_INTERNER = Interners.newWeakInterner();
+  private static final Interner<List<String>> DIMENSIONS_INTERNER = Interners.newWeakInterner();
+  private static final Interner<List<String>> METRICS_INTERNER = Interners.newWeakInterner();
+  private static final Interner<List<String>> PROJECTIONS_INTERNER = Interners.newWeakInterner();
+  private static final Interner<ClusterGroupTuples> CLUSTER_GROUPS_INTERNER = Interners.newWeakInterner();
+  private static final Interner<VirtualColumn> VIRTUAL_COLUMN_INTERNER = Interners.newWeakInterner();
+  private static final Interner<VirtualColumns> VIRTUAL_COLUMNS_INTERNER = Interners.newWeakInterner();
+  private static final Interner<CompactionState> COMPACTION_STATE_INTERNER = Interners.newWeakInterner();
+  private static final Map<String, Object> PRUNED_LOAD_SPEC = ImmutableMap.of(
+      "load spec is pruned, because it's not needed on Brokers, but eats a lot of heap space",
+      ""
+  );
+
+  private final Integer binaryVersion;
+  private final SegmentId id;
+  @Nullable
+  private final Map<String, Object> loadSpec;
+  private final List<String> dimensions;
+  private final List<String> metrics;
+  private final List<String> projections;
+  /**
+   * Typed clustering tuples for clustered base-table segments, or {@code null} for non-clustered segments. Each tuple
+   * is one cluster group's clustering-column values in the order declared by
+   * {@link ClusterGroupTuples#clusteringColumns()}. Consumed by cluster-group partial-load matchers.
+   */
+  @Nullable
+  private final ClusterGroupTuples clusterGroups;
+  private final ShardSpec shardSpec;
+
+  /**
+   * Stores some configurations of the compaction task which created this segment.
+   * This field is filled in the metadata store only when "storeCompactionState" is set true in the context of the
+   * task. True by default see {@link org.apache.druid.indexing.common.task.Tasks#DEFAULT_STORE_COMPACTION_STATE}.
+   * Also, this field can be pruned in many Druid modules when this class is loaded from the metadata store.
+   * See {@link PruneLastCompactionState} for details.
+   */
+  @Nullable
+  private final CompactionState lastCompactionState;
+  private final long size;
+  private final Integer totalRows;
+
+  /**
+   * SHA-256 fingerprint representation of the CompactionState.
+   * <p>
+   * A null fingerprint indicates that this segment either has not been compacted, or was compacted before indexing
+   * state fingerprinting existed. In the latter case, the segment would have a non-null {@link #lastCompactionState}.
+   * </p>
+   */
+  @Nullable
+  private final String indexingStateFingerprint;
+
+  @JsonCreator
+  private DataSegment(
+      @JsonProperty("dataSource") String dataSource,
+      // We take interval input as a String so we can deserialize it optimally via Intervals.fromString(interval).
+      @JsonProperty("interval") String interval,
+      @JsonProperty("version") String version,
+      // use `Map` *NOT* `LoadSpec` because we want to do lazy materialization to prevent dependency pollution
+      @JsonProperty("loadSpec") @Nullable Map<String, Object> loadSpec,
+      @JsonProperty("dimensions") @JsonDeserialize(using = CommaListJoinDeserializer.class) @Nullable
+      List<String> dimensions,
+      @JsonProperty("metrics") @JsonDeserialize(using = CommaListJoinDeserializer.class) @Nullable List<String> metrics,
+      @JsonProperty("projections") @JsonDeserialize(using = CommaListJoinDeserializer.class) @Nullable
+      List<String> projections,
+      @JsonProperty("clusterGroups") @Nullable ClusterGroupTuples clusterGroups,
+      @JsonProperty("shardSpec") @Nullable ShardSpec shardSpec,
+      @JsonProperty("lastCompactionState") @Nullable CompactionState lastCompactionState,
+      @JsonProperty("binaryVersion") Integer binaryVersion,
+      @JsonProperty("size") long size,
+      @JsonProperty("totalRows") Integer totalRows,
+      @JsonProperty("indexingStateFingerprint") @Nullable String indexingStateFingerprint,
+      @JacksonInject PruneSpecsHolder pruneSpecsHolder
+  )
+  {
+    this(
+        dataSource,
+        Intervals.fromString(interval),
+        version,
+        loadSpec,
+        dimensions,
+        metrics,
+        projections,
+        clusterGroups,
+        shardSpec,
+        lastCompactionState,
+        binaryVersion,
+        size,
+        totalRows,
+        indexingStateFingerprint,
+        pruneSpecsHolder
+    );
+  }
+
+  public DataSegment(
+      String dataSource,
+      Interval interval,
+      String version,
+      @Nullable Map<String, Object> loadSpec,
+      @Nullable List<String> dimensions,
+      @Nullable List<String> metrics,
+      @Nullable List<String> projections,
+      @Nullable ClusterGroupTuples clusterGroups,
+      @Nullable ShardSpec shardSpec,
+      @Nullable CompactionState lastCompactionState,
+      Integer binaryVersion,
+      long size,
+      Integer totalRows,
+      String indexingStateFingerprint,
+      PruneSpecsHolder pruneSpecsHolder
+  )
+  {
+    this.id = SegmentId.of(dataSource, interval, version, shardSpec);
+    // prune loadspec if needed
+    this.loadSpec = pruneSpecsHolder.pruneLoadSpec ? PRUNED_LOAD_SPEC : prepareLoadSpec(loadSpec);
+    this.dimensions = dimensions == null ? ImmutableList.of() : prepareWithInterner(dimensions, DIMENSIONS_INTERNER);
+    this.metrics = metrics == null ? ImmutableList.of() : prepareWithInterner(metrics, METRICS_INTERNER);
+    // A null value for projections means that this segment is not aware of projections (launched in druid 32).
+    // An empty list means that this segment is projection-aware, but has no projections.
+    this.projections = projections == null ? null : prepareWithInterner(projections, PROJECTIONS_INTERNER);
+    this.clusterGroups = prepareClusterGroups(clusterGroups);
+    this.shardSpec = (shardSpec == null) ? new NumberedShardSpec(0, 1) : shardSpec;
+    this.lastCompactionState = pruneSpecsHolder.pruneLastCompactionState
+                               ? null
+                               : prepareCompactionState(lastCompactionState);
+    this.binaryVersion = binaryVersion;
+    Preconditions.checkArgument(size >= 0);
+    this.size = size;
+    this.totalRows = totalRows;
+    this.indexingStateFingerprint = indexingStateFingerprint == null ?
+                                    null :
+                                    STRING_INTERNER.intern(indexingStateFingerprint);
+  }
+
+  /**
+   * Get dataSource
+   *
+   * @return the dataSource
+   */
+  @JsonProperty
+  public String getDataSource()
+  {
+    return id.getDataSource();
+  }
+
+  @JsonProperty
+  public Interval getInterval()
+  {
+    return id.getInterval();
+  }
+
+  @Nullable
+  @JsonProperty
+  public Map<String, Object> getLoadSpec()
+  {
+    return loadSpec;
+  }
+
+  @JsonProperty("version")
+  @Override
+  public String getVersion()
+  {
+    return id.getVersion();
+  }
+
+  @JsonProperty
+  @JsonSerialize(using = CommaListJoinSerializer.class)
+  public List<String> getDimensions()
+  {
+    return dimensions;
+  }
+
+  @JsonProperty
+  @JsonSerialize(using = CommaListJoinSerializer.class)
+  public List<String> getMetrics()
+  {
+    return metrics;
+  }
+
+  @Nullable
+  @JsonProperty
+  @JsonInclude(JsonInclude.Include.NON_NULL)
+  @JsonSerialize(using = CommaListJoinSerializer.class)
+  public List<String> getProjections()
+  {
+    return projections;
+  }
+
+  @Nullable
+  @JsonProperty
+  @JsonInclude(JsonInclude.Include.NON_NULL)
+  public ClusterGroupTuples getClusterGroups()
+  {
+    return clusterGroups;
+  }
+
+  @JsonProperty
+  public ShardSpec getShardSpec()
+  {
+    return shardSpec;
+  }
+
+  @Nullable
+  @JsonProperty
+  @JsonInclude(JsonInclude.Include.NON_NULL)
+  public CompactionState getLastCompactionState()
+  {
+    return lastCompactionState;
+  }
+
+  @JsonProperty
+  public Integer getBinaryVersion()
+  {
+    return binaryVersion;
+  }
+
+  @JsonProperty
+  public long getSize()
+  {
+    return size;
+  }
+
+  @Nullable
+  @JsonProperty("totalRows")
+  @JsonInclude(JsonInclude.Include.NON_NULL)
+  public Integer getTotalRows()
+  {
+    return totalRows;
+  }
+
+  // "identifier" for backward compatibility of JSON API
+  @JsonProperty(value = "identifier", access = JsonProperty.Access.READ_ONLY)
+  public SegmentId getId()
+  {
+    return id;
+  }
+
+  public boolean isTombstone()
+  {
+    return getShardSpec().getType().equals(ShardSpec.Type.TOMBSTONE);
+  }
+
+  /**
+   * Get the inexing state fingerprint associated with this segment.
+   * <p>
+   * A null fingerprint indicates that this segment either has not been compacted, or was compacted before compaction
+   * fingerprinting existed. In the latter case, the segment would have a non-null {@link #lastCompactionState}.
+   * </p>
+   */
+  @Nullable
+  @JsonProperty
+  @JsonInclude(JsonInclude.Include.NON_NULL)
+  public String getIndexingStateFingerprint()
+  {
+    return indexingStateFingerprint;
+  }
+
+  @Override
+  public boolean overshadows(DataSegment other)
+  {
+    if (id.getDataSource().equals(other.id.getDataSource()) && id.getInterval().overlaps(other.id.getInterval())) {
+      final int majorVersionCompare = id.getVersion().compareTo(other.id.getVersion());
+      if (majorVersionCompare > 0) {
+        return true;
+      } else if (majorVersionCompare == 0) {
+        return includeRootPartitions(other) && getMinorVersion() > other.getMinorVersion();
+      }
+    }
+    return false;
+  }
+
+  @Override
+  public int getStartRootPartitionId()
+  {
+    return shardSpec.getStartRootPartitionId();
+  }
+
+  @Override
+  public int getEndRootPartitionId()
+  {
+    return shardSpec.getEndRootPartitionId();
+  }
+
+  @Override
+  public short getMinorVersion()
+  {
+    return shardSpec.getMinorVersion();
+  }
+
+  @Override
+  public short getAtomicUpdateGroupSize()
+  {
+    return shardSpec.getAtomicUpdateGroupSize();
+  }
+
+  private boolean includeRootPartitions(DataSegment other)
+  {
+    return shardSpec.getStartRootPartitionId() <= other.shardSpec.getStartRootPartitionId()
+           && shardSpec.getEndRootPartitionId() >= other.shardSpec.getEndRootPartitionId();
+  }
+
+  public SegmentDescriptor toDescriptor()
+  {
+    return id.toDescriptor();
+  }
+
+  public DataSegment withLoadSpec(Map<String, Object> loadSpec)
+  {
+    return builder(this).loadSpec(loadSpec).build();
+  }
+
+  public DataSegment withDimensions(List<String> dimensions)
+  {
+    return builder(this).dimensions(dimensions).build();
+  }
+
+  public DataSegment withMetrics(List<String> metrics)
+  {
+    return builder(this).metrics(metrics).build();
+  }
+
+  public DataSegment withProjections(List<String> projections)
+  {
+    return builder(this).projections(projections).build();
+  }
+
+  public DataSegment withClusterGroups(@Nullable ClusterGroupTuples clusterGroups)
+  {
+    return builder(this).clusterGroups(clusterGroups).build();
+  }
+
+  public DataSegment withShardSpec(ShardSpec newSpec)
+  {
+    return builder(this).shardSpec(newSpec).build();
+  }
+
+  public DataSegment withSize(long size)
+  {
+    return builder(this).size(size).build();
+  }
+
+  public DataSegment withVersion(String version)
+  {
+    return builder(this).version(version).build();
+  }
+
+  public DataSegment withBinaryVersion(int binaryVersion)
+  {
+    return builder(this).binaryVersion(binaryVersion).build();
+  }
+
+  public DataSegment withLastCompactionState(CompactionState compactionState)
+  {
+    return builder(this).lastCompactionState(compactionState).build();
+  }
+
+  public DataSegment withIndexingStateFingerprint(String indexingStateFingerprint)
+  {
+    return builder(this).indexingStateFingerprint(indexingStateFingerprint).build();
+  }
+
+  /**
+   * Returns a copy of this segment with every optional top-level field that is not listed in {@code details} removed.
+   * The fields that are not optional are always retained; see {@link SegmentDetail} for the full split.
+   *
+   * @param details the optional details to retain; null retains all details and an empty set retains none
+   */
+  public DataSegment retainOnlyDetails(@Nullable final Set<SegmentDetail> details)
+  {
+    if (details == null) {
+      return this;
+    } else {
+      return builder(this)
+          .dimensions(details.contains(SegmentDetail.DIMENSIONS) ? dimensions : null)
+          .metrics(details.contains(SegmentDetail.METRICS) ? metrics : null)
+          .projections(details.contains(SegmentDetail.PROJECTIONS) ? projections : null)
+          .clusterGroups(details.contains(SegmentDetail.CLUSTER_GROUPS) ? clusterGroups : null)
+          .lastCompactionState(details.contains(SegmentDetail.COMPACTION_STATE) ? lastCompactionState : null)
+          .loadSpec(details.contains(SegmentDetail.LOAD_SPEC) ? loadSpec : null)
+          .totalRows(details.contains(SegmentDetail.ROW_COUNT) ? totalRows : null)
+          .indexingStateFingerprint(
+              details.contains(SegmentDetail.INDEXING_STATE_FINGERPRINT) ? indexingStateFingerprint : null
+          )
+          .build();
+    }
+  }
+
+  public DataSegment.Builder toBuilder()
+  {
+    return builder(this);
+  }
+
+  @Override
+  public int compareTo(DataSegment dataSegment)
+  {
+    return getId().compareTo(dataSegment.getId());
+  }
+
+  @Override
+  public boolean equals(Object o)
+  {
+    if (o instanceof DataSegment) {
+      return getId().equals(((DataSegment) o).getId());
+    }
+    return false;
+  }
+
+  @Override
+  public int hashCode()
+  {
+    return getId().hashCode();
+  }
+
+  @Override
+  public String toString()
+  {
+    return "DataSegment{" +
+           "binaryVersion=" + binaryVersion +
+           ", id=" + id +
+           ", loadSpec=" + loadSpec +
+           ", dimensions=" + dimensions +
+           ", metrics=" + metrics +
+           ", projections=" + projections +
+           ", clusterGroups=" + clusterGroups +
+           ", shardSpec=" + shardSpec +
+           ", lastCompactionState=" + lastCompactionState +
+           ", size=" + size +
+           ", totalRows=" + totalRows +
+           ", indexingStateFingerprint=" + indexingStateFingerprint +
+           '}';
+  }
+
+
+  @Nullable
+  private static Map<String, Object> prepareLoadSpec(@Nullable Map<String, Object> loadSpec)
+  {
+    if (loadSpec == null) {
+      return null;
+    }
+    // Load spec is just of 3 entries on average; HashMap/LinkedHashMap consumes much more memory than ArrayMap
+    Map<String, Object> result = new Object2ObjectArrayMap<>(loadSpec.size());
+    for (Map.Entry<String, Object> e : loadSpec.entrySet()) {
+      result.put(STRING_INTERNER.intern(e.getKey()), e.getValue());
+    }
+    return result;
+  }
+
+  @Nullable
+  private static CompactionState prepareCompactionState(@Nullable CompactionState lastCompactionState)
+  {
+    if (lastCompactionState == null) {
+      return null;
+    }
+    return COMPACTION_STATE_INTERNER.intern(lastCompactionState);
+  }
+
+  @Nullable
+  private static ClusterGroupTuples prepareClusterGroups(@Nullable ClusterGroupTuples clusterGroups)
+  {
+    if (clusterGroups == null) {
+      return null;
+    }
+    return CLUSTER_GROUPS_INTERNER.intern(clusterGroups);
+  }
+
+  /**
+   * Returns a list of strings with all empty strings removed and all strings interned.
+   * <p>
+   * The dimensions, metrics, and projections are stored as canonical string values to decrease memory required for
+   * storing large numbers of segments.
+   */
+  private static List<String> prepareWithInterner(List<String> list, Interner<List<String>> interner)
+  {
+    return interner.intern(list.stream()
+                               .filter(s -> !Strings.isNullOrEmpty(s))
+                               .map(STRING_INTERNER::intern)
+                               .collect(ImmutableList.toImmutableList()));
+  }
+
+  public static Builder builder(SegmentId segmentId)
+  {
+    return new Builder(segmentId);
+  }
+
+  public static Builder builder(DataSegment segment)
+  {
+    return new Builder(segment);
+  }
+
+  public static Builder builder(DataSegment.Builder segmentBuilder)
+  {
+    return new Builder(segmentBuilder);
+  }
+
+  public static class Builder
+  {
+    private String dataSource;
+    private Interval interval;
+    private String version;
+    private Map<String, Object> loadSpec;
+    private List<String> dimensions;
+    private List<String> metrics;
+    private List<String> projections;
+    @Nullable
+    private ClusterGroupTuples clusterGroups;
+    private ShardSpec shardSpec;
+    private CompactionState lastCompactionState;
+    private Integer binaryVersion;
+    private long size;
+    private Integer totalRows;
+    private String indexingStateFingerprint;
+
+    private Builder(SegmentId segmentId)
+    {
+      this.dataSource = segmentId.getDataSource();
+      this.interval = segmentId.getInterval();
+      this.version = segmentId.getVersion();
+      this.shardSpec = new NumberedShardSpec(0, 1);
+      this.binaryVersion = 0;
+      this.size = 0;
+      this.totalRows = null;
+      this.lastCompactionState = null;
+      this.indexingStateFingerprint = null;
+    }
+
+    private Builder(DataSegment segment)
+    {
+      this.dataSource = segment.getDataSource();
+      this.interval = segment.getInterval();
+      this.version = segment.getVersion();
+      this.loadSpec = segment.getLoadSpec();
+      this.dimensions = segment.getDimensions();
+      this.metrics = segment.getMetrics();
+      this.projections = segment.getProjections();
+      this.clusterGroups = segment.getClusterGroups();
+      this.shardSpec = segment.getShardSpec();
+      this.lastCompactionState = segment.getLastCompactionState();
+      this.binaryVersion = segment.getBinaryVersion();
+      this.size = segment.getSize();
+      this.totalRows = segment.getTotalRows();
+      this.indexingStateFingerprint = segment.getIndexingStateFingerprint();
+    }
+
+    private Builder(DataSegment.Builder segmentBuilder)
+    {
+      this.dataSource = segmentBuilder.dataSource;
+      this.interval = segmentBuilder.interval;
+      this.version = segmentBuilder.version;
+      this.loadSpec = segmentBuilder.loadSpec;
+      this.dimensions = segmentBuilder.dimensions;
+      this.metrics = segmentBuilder.metrics;
+      this.projections = segmentBuilder.projections;
+      this.clusterGroups = segmentBuilder.clusterGroups;
+      this.shardSpec = segmentBuilder.shardSpec;
+      this.lastCompactionState = segmentBuilder.lastCompactionState;
+      this.binaryVersion = segmentBuilder.binaryVersion;
+      this.size = segmentBuilder.size;
+      this.totalRows = segmentBuilder.totalRows;
+      this.indexingStateFingerprint = segmentBuilder.indexingStateFingerprint;
+    }
+
+    public Builder dataSource(String dataSource)
+    {
+      this.dataSource = dataSource;
+      return this;
+    }
+
+    public Builder interval(Interval interval)
+    {
+      this.interval = interval;
+      return this;
+    }
+
+    public Builder version(String version)
+    {
+      this.version = version;
+      return this;
+    }
+
+    public Builder loadSpec(Map<String, Object> loadSpec)
+    {
+      this.loadSpec = loadSpec;
+      return this;
+    }
+
+    public Builder dimensions(List<String> dimensions)
+    {
+      this.dimensions = dimensions;
+      return this;
+    }
+
+    public Builder metrics(List<String> metrics)
+    {
+      this.metrics = metrics;
+      return this;
+    }
+
+    public Builder projections(List<String> projections)
+    {
+      this.projections = projections;
+      return this;
+    }
+
+    public Builder clusterGroups(@Nullable ClusterGroupTuples clusterGroups)
+    {
+      this.clusterGroups = clusterGroups;
+      return this;
+    }
+
+    public Builder shardSpec(ShardSpec shardSpec)
+    {
+      this.shardSpec = shardSpec;
+      return this;
+    }
+
+    public Builder lastCompactionState(CompactionState compactionState)
+    {
+      this.lastCompactionState = compactionState;
+      return this;
+    }
+
+    public Builder binaryVersion(Integer binaryVersion)
+    {
+      this.binaryVersion = binaryVersion;
+      return this;
+    }
+
+    public Builder size(long size)
+    {
+      this.size = size;
+      return this;
+    }
+
+    public Builder totalRows(Integer totalRows)
+    {
+      this.totalRows = totalRows;
+      return this;
+    }
+
+    public Builder indexingStateFingerprint(String indexingStateFingerprint)
+    {
+      this.indexingStateFingerprint = indexingStateFingerprint;
+      return this;
+    }
+
+    public DataSegment build()
+    {
+      // Check stuff that goes into the id, at least.
+      Preconditions.checkNotNull(dataSource, "dataSource");
+      Preconditions.checkNotNull(interval, "interval");
+      Preconditions.checkNotNull(version, "version");
+      Preconditions.checkNotNull(shardSpec, "shardSpec");
+
+      return new DataSegment(
+          dataSource,
+          interval,
+          version,
+          loadSpec,
+          dimensions,
+          metrics,
+          projections,
+          clusterGroups,
+          shardSpec,
+          lastCompactionState,
+          binaryVersion,
+          size,
+          totalRows,
+          indexingStateFingerprint,
+          PruneSpecsHolder.DEFAULT
+      );
+    }
+  }
+
+  @Override
+  public boolean hasData()
+  {
+    return !isTombstone();
+  }
+
+}

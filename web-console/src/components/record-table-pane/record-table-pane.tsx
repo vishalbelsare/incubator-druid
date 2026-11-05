@@ -16,26 +16,30 @@
  * limitations under the License.
  */
 
-import { Button, Icon } from '@blueprintjs/core';
+import { Button, Icon, PopoverNext } from '@blueprintjs/core';
 import { IconNames } from '@blueprintjs/icons';
-import { Popover2 } from '@blueprintjs/popover2';
 import classNames from 'classnames';
-import { Column, QueryResult } from 'druid-query-toolkit';
+import type { Column, QueryResult } from 'druid-query-toolkit';
 import React, { useEffect, useState } from 'react';
-import ReactTable from 'react-table';
 
 import { ShowValueDialog } from '../../dialogs/show-value-dialog/show-value-dialog';
-import { SMALL_TABLE_PAGE_SIZE, SMALL_TABLE_PAGE_SIZE_OPTIONS } from '../../react-table';
+import type { Pagination } from '../../utils';
 import {
   columnToIcon,
+  columnToSummary,
   columnToWidth,
-  filterMap,
   formatNumber,
   getNumericColumnBraces,
-  Pagination,
+  isNumberLike,
 } from '../../utils';
 import { BracedText } from '../braced-text/braced-text';
 import { CellFilterMenu } from '../cell-filter-menu/cell-filter-menu';
+import type { ConsoleTableCellInfo } from '../console-table';
+import {
+  ConsoleTable,
+  SMALL_TABLE_PAGE_SIZE,
+  SMALL_TABLE_PAGE_SIZE_OPTIONS,
+} from '../console-table';
 import { Deferred } from '../deferred/deferred';
 import { TableCell } from '../table-cell/table-cell';
 
@@ -102,7 +106,7 @@ export const RecordTablePane = React.memo(function RecordTablePane(props: Record
   const finalPage =
     hasMoreResults && Math.floor(queryResult.rows.length / pagination.pageSize) === pagination.page; // on the last page
 
-  const numericColumnBraces = getNumericColumnBraces(queryResult, pagination);
+  const numericColumnBraces = getNumericColumnBraces(queryResult, undefined, pagination);
   return (
     <div className={classNames('record-table-pane', { 'more-results': hasMoreResults })}>
       {finalPage ? (
@@ -116,7 +120,7 @@ export const RecordTablePane = React.memo(function RecordTablePane(props: Record
           />
         </div>
       ) : (
-        <ReactTable
+        <ConsoleTable
           className="-striped -highlight"
           data={queryResult.rows as any[][]}
           ofText={hasMoreResults ? '' : 'of'}
@@ -131,7 +135,7 @@ export const RecordTablePane = React.memo(function RecordTablePane(props: Record
           showPagination={
             queryResult.rows.length > Math.min(SMALL_TABLE_PAGE_SIZE, pagination.pageSize)
           }
-          columns={filterMap(queryResult.header, (column, i) => {
+          columns={queryResult.header.map((column, i) => {
             const h = column.name;
             const icon = columnToIcon(column);
 
@@ -139,7 +143,7 @@ export const RecordTablePane = React.memo(function RecordTablePane(props: Record
               Header() {
                 return (
                   <div className="clickable-cell">
-                    <div className="output-name">
+                    <div className="output-name" data-tooltip={columnToSummary(column)}>
                       {icon && <Icon className="type-icon" icon={icon} size={12} />}
                       {h}
                       {hasFilterOnHeader(h, i) && <Icon icon={IconNames.FILTER} size={14} />}
@@ -149,22 +153,26 @@ export const RecordTablePane = React.memo(function RecordTablePane(props: Record
               },
               headerClassName: getHeaderClassName(h),
               accessor: String(i),
-              Cell(row) {
+              Cell(row: ConsoleTableCellInfo<any>) {
                 const value = row.value;
                 return (
                   <div>
-                    <Popover2 content={<Deferred content={() => getCellMenu(column, i, value)} />}>
+                    <PopoverNext
+                      content={<Deferred content={() => getCellMenu(column, i, value)} />}
+                      lazy
+                      shouldReturnFocusOnClose={false}
+                    >
                       {numericColumnBraces[i] ? (
                         <BracedText
                           className="table-padding"
-                          text={formatNumber(value)}
+                          text={isNumberLike(value) ? formatNumber(value) : String(value)}
                           braces={numericColumnBraces[i]}
                           padFractionalPart
                         />
                       ) : (
                         <TableCell value={value} unlimited />
                       )}
-                    </Popover2>
+                    </PopoverNext>
                   </div>
                 );
               },
@@ -173,7 +181,9 @@ export const RecordTablePane = React.memo(function RecordTablePane(props: Record
           })}
         />
       )}
-      {showValue && <ShowValueDialog onClose={() => setShowValue(undefined)} str={showValue} />}
+      {showValue && (
+        <ShowValueDialog onClose={() => setShowValue(undefined)} str={showValue} size="large" />
+      )}
     </div>
   );
 });

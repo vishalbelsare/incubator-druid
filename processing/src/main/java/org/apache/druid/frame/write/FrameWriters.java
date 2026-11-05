@@ -19,13 +19,12 @@
 
 package org.apache.druid.frame.write;
 
-import com.google.common.base.Preconditions;
+import org.apache.druid.error.DruidException;
 import org.apache.druid.frame.FrameType;
-import org.apache.druid.frame.allocation.MemoryAllocator;
-import org.apache.druid.frame.key.SortColumn;
+import org.apache.druid.frame.allocation.MemoryAllocatorFactory;
+import org.apache.druid.frame.key.KeyColumn;
 import org.apache.druid.frame.write.columnar.ColumnarFrameWriterFactory;
 import org.apache.druid.java.util.common.IAE;
-import org.apache.druid.java.util.common.ISE;
 import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.column.RowSignature;
 
@@ -45,23 +44,46 @@ public class FrameWriters
   }
 
   /**
-   * Creates a {@link FrameWriterFactory} that produces frames of the given {@link FrameType}.
+   * Creates a {@link FrameWriterFactory}.
+   *
+   * @param frameType        frame type to write
+   * @param allocatorFactory supplier of allocators, which ultimately determine frame size. Frames are closed and
+   *                         written once the allocator runs out of memory.
+   * @param signature        signature of the frames
+   * @param sortColumns      sort columns for the frames. If nonempty, {@link FrameSort#sort} is used to sort the
+   *                         resulting frames.
+   * @param removeNullBytes  whether null bytes should be removed from strings as part of writing to the frame.
+   *                         Can only be set to "true" for row-based frame types.
    */
   public static FrameWriterFactory makeFrameWriterFactory(
       final FrameType frameType,
-      final MemoryAllocator allocator,
+      final MemoryAllocatorFactory allocatorFactory,
       final RowSignature signature,
-      final List<SortColumn> sortColumns
+      final List<KeyColumn> sortColumns,
+      final boolean removeNullBytes
   )
   {
-    switch (Preconditions.checkNotNull(frameType, "frameType")) {
-      case COLUMNAR:
-        return new ColumnarFrameWriterFactory(allocator, signature, sortColumns);
-      case ROW_BASED:
-        return new RowBasedFrameWriterFactory(allocator, signature, sortColumns);
-      default:
-        throw new ISE("Unrecognized frame type [%s]", frameType);
+    if (frameType.isRowBased()) {
+      return new RowBasedFrameWriterFactory(allocatorFactory, frameType, signature, sortColumns, removeNullBytes);
+    } else {
+      // Columnar.
+      if (removeNullBytes) {
+        // Defensive exception because user-provided "removeNullBytes" should never make it this far. Calling code
+        // should take care to not request columnar writers with removeNullBytes = true.
+        throw DruidException.defensive("Cannot use removeNullBytes with frameType[%s]", frameType);
+      }
+
+      return new ColumnarFrameWriterFactory(allocatorFactory, signature, sortColumns);
     }
+  }
+
+  public static FrameWriterFactory makeColumnBasedFrameWriterFactory(
+      final MemoryAllocatorFactory allocatorFactory,
+      final RowSignature signature,
+      final List<KeyColumn> sortColumns
+  )
+  {
+    return new ColumnarFrameWriterFactory(allocatorFactory, signature, sortColumns);
   }
 
   /**
@@ -73,12 +95,12 @@ public class FrameWriters
    */
   public static RowSignature sortableSignature(
       final RowSignature signature,
-      final List<SortColumn> sortColumns
+      final List<KeyColumn> keyColumns
   )
   {
     final RowSignature.Builder builder = RowSignature.builder();
 
-    for (final SortColumn columnName : sortColumns) {
+    for (final KeyColumn columnName : keyColumns) {
       final Optional<ColumnType> columnType = signature.getColumnType(columnName.columnName());
       if (!columnType.isPresent()) {
         throw new IAE("Column [%s] not present in signature", columnName);
@@ -88,7 +110,7 @@ public class FrameWriters
     }
 
     final Set<String> sortColumnNames =
-        sortColumns.stream().map(SortColumn::columnName).collect(Collectors.toSet());
+        keyColumns.stream().map(KeyColumn::columnName).collect(Collectors.toSet());
 
     for (int i = 0; i < signature.size(); i++) {
       final String columnName = signature.getColumnName(i);

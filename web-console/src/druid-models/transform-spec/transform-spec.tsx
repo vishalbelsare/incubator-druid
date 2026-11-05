@@ -17,9 +17,9 @@
  */
 
 import { Code } from '@blueprintjs/core';
-import React from 'react';
 
-import { ExternalLink, Field } from '../../components';
+import type { Field } from '../../components';
+import { ExternalLink } from '../../components';
 import { getLink } from '../../links';
 import { TIME_COLUMN } from '../timestamp-spec/timestamp-spec';
 
@@ -50,12 +50,13 @@ export const TRANSFORM_FIELDS: Field<Transform>[] = [
   {
     name: 'expression',
     type: 'string',
-    placeholder: '"foo" + "bar"',
+    multiline: true,
+    placeholder: `ex: strlen(concat("foo", '-bar'))`,
     required: true,
     info: (
       <>
         A valid Druid{' '}
-        <ExternalLink href={`${getLink('DOCS')}/misc/math-expr.html`}>expression</ExternalLink>.
+        <ExternalLink href={`${getLink('DOCS')}/querying/math-expr`}>expression</ExternalLink>.
       </>
     ),
   },
@@ -82,7 +83,7 @@ export function getTimestampExpressionFields(transforms: Transform[]): Field<Tra
       info: (
         <>
           A valid Druid{' '}
-          <ExternalLink href={`${getLink('DOCS')}/misc/math-expr.html`}>expression</ExternalLink>{' '}
+          <ExternalLink href={`${getLink('DOCS')}/querying/math-expr`}>expression</ExternalLink>{' '}
           that should output a millis timestamp. You most likely want to use the{' '}
           <Code>timestamp_parse</Code> function at the outer level.
         </>

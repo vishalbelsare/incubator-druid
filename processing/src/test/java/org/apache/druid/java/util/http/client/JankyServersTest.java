@@ -1,0 +1,476 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+package org.apache.druid.java.util.http.client;
+
+import com.google.common.util.concurrent.ListenableFuture;
+import io.netty.channel.ChannelException;
+import io.netty.handler.codec.DecoderException;
+import io.netty.handler.codec.http.HttpMethod;
+import io.netty.handler.timeout.ReadTimeoutException;
+import org.apache.druid.java.util.common.StringUtils;
+import org.apache.druid.java.util.common.lifecycle.Lifecycle;
+import org.apache.druid.java.util.http.client.response.StatusResponseHandler;
+import org.apache.druid.java.util.http.client.response.StatusResponseHolder;
+import org.joda.time.Duration;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+
+import javax.net.ssl.SSLContext;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.SocketException;
+import java.net.URL;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+/**
+ * Tests with a bunch of goofy not-actually-http servers.
+ */
+public class JankyServersTest
+{
+  static ExecutorService exec;
+  static ServerSocket silentServerSocket;
+  static ServerSocket echoServerSocket;
+  static ServerSocket closingServerSocket;
+
+  @BeforeAll
+  public static void setUp() throws Exception
+  {
+    exec = Executors.newCachedThreadPool();
+
+    silentServerSocket = new ServerSocket(0);
+    echoServerSocket = new ServerSocket(0);
+    closingServerSocket = new ServerSocket(0);
+
+    exec.submit(
+        new Runnable()
+        {
+          @Override
+          public void run()
+          {
+            while (!Thread.currentThread().isInterrupted()) {
+              try (
+                  Socket clientSocket = silentServerSocket.accept();
+                  InputStream in = clientSocket.getInputStream()
+              ) {
+                while (in.read() != -1) {
+                  /* Do nothing. Read bytes till the end of the stream. */
+                }
+              }
+              catch (Exception e) {
+                // Suppress
+              }
+            }
+          }
+        }
+    );
+
+    exec.submit(
+        new Runnable()
+        {
+          @Override
+          public void run()
+          {
+            while (!Thread.currentThread().isInterrupted()) {
+              try (
+                  Socket clientSocket = closingServerSocket.accept();
+                  InputStream in = clientSocket.getInputStream()
+              ) {
+                in.read();
+                clientSocket.close();
+              }
+              catch (Exception e) {
+                // Suppress
+              }
+            }
+          }
+        }
+    );
+
+    exec.submit(
+        new Runnable()
+        {
+          @Override
+          public void run()
+          {
+            while (!Thread.currentThread().isInterrupted()) {
+              try (
+                  Socket clientSocket = echoServerSocket.accept();
+                  OutputStream out = clientSocket.getOutputStream();
+                  InputStream in = clientSocket.getInputStream()
+              ) {
+                int b;
+                while ((b = in.read()) != -1) {
+                  out.write(b);
+                }
+              }
+              catch (Exception e) {
+                // Suppress
+              }
+            }
+          }
+        }
+    );
+  }
+
+  @AfterAll
+  public static void tearDown() throws Exception
+  {
+    exec.shutdownNow();
+    silentServerSocket.close();
+    echoServerSocket.close();
+    closingServerSocket.close();
+  }
+
+  @Test
+  public void testHttpSilentServerWithGlobalTimeout() throws Throwable
+  {
+    final Lifecycle lifecycle = new Lifecycle();
+    try {
+      final HttpClientConfig config = HttpClientConfig.builder().withReadTimeout(new Duration(100)).build();
+      final HttpClient client = HttpClientInit.createClient(config, lifecycle);
+      final ListenableFuture<StatusResponseHolder> future = client
+          .go(
+              new Request(HttpMethod.GET, new URL(StringUtils.format("http://localhost:%d/", silentServerSocket.getLocalPort()))),
+              StatusResponseHandler.getInstance()
+          );
+
+      Throwable e = null;
+      try {
+        future.get();
+      }
+      catch (ExecutionException e1) {
+        e = e1.getCause();
+      }
+
+      Assertions.assertTrue(e instanceof ReadTimeoutException, "ReadTimeoutException thrown by 'get'");
+    }
+    finally {
+      lifecycle.stop();
+    }
+  }
+
+  @Test
+  public void testHttpSilentServerWithRequestTimeout() throws Throwable
+  {
+    final Lifecycle lifecycle = new Lifecycle();
+    try {
+      final HttpClientConfig config = HttpClientConfig.builder().withReadTimeout(new Duration(86400L * 365)).build();
+      final HttpClient client = HttpClientInit.createClient(config, lifecycle);
+      final ListenableFuture<StatusResponseHolder> future = client
+          .go(
+              new Request(HttpMethod.GET, new URL(StringUtils.format("http://localhost:%d/", silentServerSocket.getLocalPort()))),
+              StatusResponseHandler.getInstance(),
+              new Duration(100L)
+          );
+
+      Throwable e = null;
+      try {
+        future.get();
+      }
+      catch (ExecutionException e1) {
+        e = e1.getCause();
+      }
+
+      Assertions.assertTrue(e instanceof ReadTimeoutException, "ReadTimeoutException thrown by 'get'");
+    }
+    finally {
+      lifecycle.stop();
+    }
+  }
+
+  @Test
+  public void testHttpsSilentServer() throws Throwable
+  {
+    final Lifecycle lifecycle = new Lifecycle();
+    try {
+      final HttpClientConfig config = HttpClientConfig.builder()
+                                                      .withSslContext(SSLContext.getDefault())
+                                                      .withSslHandshakeTimeout(new Duration(100))
+                                                      .build();
+      final HttpClient client = HttpClientInit.createClient(config, lifecycle);
+
+      final ListenableFuture<StatusResponseHolder> response = client
+          .go(
+              new Request(HttpMethod.GET, new URL(StringUtils.format("https://localhost:%d/", silentServerSocket.getLocalPort()))),
+              StatusResponseHandler.getInstance()
+          );
+
+      Throwable e = null;
+      try {
+        response.get();
+      }
+      catch (ExecutionException e1) {
+        e = e1.getCause();
+      }
+
+      Assertions.assertTrue(e instanceof ChannelException, "ChannelException thrown by 'get'");
+    }
+    finally {
+      lifecycle.stop();
+    }
+  }
+
+  @Test
+  public void testHttpConnectionClosingServer() throws Throwable
+  {
+    final Lifecycle lifecycle = new Lifecycle();
+    try {
+      final HttpClientConfig config = HttpClientConfig.builder().build();
+      final HttpClient client = HttpClientInit.createClient(config, lifecycle);
+      final ListenableFuture<StatusResponseHolder> response = client
+          .go(
+              new Request(HttpMethod.GET, new URL(StringUtils.format("http://localhost:%d/", closingServerSocket.getLocalPort()))),
+              StatusResponseHandler.getInstance()
+          );
+      Throwable e = null;
+      try {
+        response.get();
+      }
+      catch (ExecutionException e1) {
+        e = e1.getCause();
+        e1.printStackTrace();
+      }
+
+      Assertions.assertTrue(isChannelClosedException(e), "ChannelException thrown by 'get'");
+    }
+    finally {
+      lifecycle.stop();
+    }
+  }
+
+  @Test
+  public void testHttpsConnectionClosingServer() throws Throwable
+  {
+    final Lifecycle lifecycle = new Lifecycle();
+    try {
+      final HttpClientConfig config = HttpClientConfig.builder().withSslContext(SSLContext.getDefault()).build();
+      final HttpClient client = HttpClientInit.createClient(config, lifecycle);
+
+      final ListenableFuture<StatusResponseHolder> response = client
+          .go(
+              new Request(HttpMethod.GET, new URL(StringUtils.format("https://localhost:%d/", closingServerSocket.getLocalPort()))),
+              StatusResponseHandler.getInstance()
+          );
+
+      Throwable e = null;
+      try {
+        response.get();
+      }
+      catch (ExecutionException e1) {
+        e = e1.getCause();
+        e1.printStackTrace();
+      }
+
+      Assertions.assertTrue(isChannelClosedException(e), "ChannelException thrown by 'get'");
+    }
+    finally {
+      lifecycle.stop();
+    }
+  }
+
+  @Test
+  public void testHttpConnectionRefused() throws Throwable
+  {
+    final Lifecycle lifecycle = new Lifecycle();
+    try {
+      final HttpClientConfig config = HttpClientConfig.builder().withSslContext(SSLContext.getDefault()).build();
+      final HttpClient client = HttpClientInit.createClient(config, lifecycle);
+
+      // Need to select a port that isn't being listened to. This approach finds an unused port in a racey way.
+      // Hopefully it works most of the time.
+      final ServerSocket sock = new ServerSocket(0);
+      final int port = sock.getLocalPort();
+      sock.close();
+
+      final ListenableFuture<StatusResponseHolder> response = client
+          .go(
+              new Request(HttpMethod.GET, new URL(StringUtils.format("http://localhost:%d/", port))),
+              StatusResponseHandler.getInstance()
+          );
+
+      Throwable e = null;
+      try {
+        response.get();
+      }
+      catch (ExecutionException e1) {
+        e = e1.getCause();
+        e1.printStackTrace();
+      }
+
+      Assertions.assertTrue(isChannelClosedException(e), "ChannelException thrown by 'get'");
+    }
+    finally {
+      lifecycle.stop();
+    }
+  }
+
+  @Test
+  public void testHttpsConnectionRefused() throws Throwable
+  {
+    final Lifecycle lifecycle = new Lifecycle();
+    try {
+      final HttpClientConfig config = HttpClientConfig.builder().withSslContext(SSLContext.getDefault()).build();
+      final HttpClient client = HttpClientInit.createClient(config, lifecycle);
+
+      // Need to select a port that isn't being listened to. This approach finds an unused port in a racey way.
+      // Hopefully it works most of the time.
+      final ServerSocket sock = new ServerSocket(0);
+      final int port = sock.getLocalPort();
+      sock.close();
+
+      final ListenableFuture<StatusResponseHolder> response = client
+          .go(
+              new Request(HttpMethod.GET, new URL(StringUtils.format("https://localhost:%d/", port))),
+              StatusResponseHandler.getInstance()
+          );
+
+      Throwable e = null;
+      try {
+        response.get();
+      }
+      catch (ExecutionException e1) {
+        e = e1.getCause();
+        e1.printStackTrace();
+      }
+
+      Assertions.assertTrue(isChannelClosedException(e), "ChannelException thrown by 'get'");
+    }
+    finally {
+      lifecycle.stop();
+    }
+  }
+
+  public boolean isChannelClosedException(Throwable e)
+  {
+    return e instanceof ChannelException ||
+           (e instanceof SocketException && e.getMessage().contains("Connection reset")) ||
+           (e instanceof IOException && e.getMessage().contains("Connection reset by peer"));
+  }
+
+  @Test
+  public void testHttpEchoServer() throws Throwable
+  {
+    final Lifecycle lifecycle = new Lifecycle();
+    try {
+      final HttpClientConfig config = HttpClientConfig.builder().build();
+      final HttpClient client = HttpClientInit.createClient(config, lifecycle);
+      final ListenableFuture<StatusResponseHolder> response = client
+          .go(
+              new Request(HttpMethod.GET, new URL(StringUtils.format("http://localhost:%d/", echoServerSocket.getLocalPort()))),
+              StatusResponseHandler.getInstance()
+          );
+
+      // The "echo" server replies with the bytes of the request itself, so the response status line
+      // becomes "GET / HTTP/1.1". Netty 3's codec rejected this with an IllegalArgumentException;
+      // Netty 4's codec is more lenient and hands us a best-effort HttpResponse with a failed
+      // decoderResult(). NettyHttpClient checks decoderResult() and surfaces the failure so callers
+      // are not silently handed a synthesized response.
+      final ExecutionException exception = Assertions.assertThrows(
+          ExecutionException.class,
+          () -> response.get(5, TimeUnit.SECONDS)
+      );
+      Throwable cause = exception.getCause();
+      Assertions.assertNotNull(cause, "ExecutionException must have a cause");
+      Assertions.assertTrue(cause instanceof DecoderException
+          || cause.getMessage() != null && cause.getMessage().contains("invalid version format"),
+          "expected decoder failure, got " + cause
+      );
+    }
+    finally {
+      lifecycle.stop();
+    }
+  }
+
+  @Test
+  public void testHttpsEchoServer() throws Throwable
+  {
+    final Lifecycle lifecycle = new Lifecycle();
+    try {
+      final HttpClientConfig config = HttpClientConfig.builder().withSslContext(SSLContext.getDefault()).build();
+      final HttpClient client = HttpClientInit.createClient(config, lifecycle);
+
+      final ListenableFuture<StatusResponseHolder> response = client
+          .go(
+              new Request(HttpMethod.GET, new URL(StringUtils.format("https://localhost:%d/", echoServerSocket.getLocalPort()))),
+              StatusResponseHandler.getInstance()
+          );
+
+      final ExecutionException exception = Assertions.assertThrows(ExecutionException.class, response::get);
+      Assertions.assertTrue(
+          exception.getMessage().contains("io.netty.channel.ChannelException: Faulty channel in resource pool")
+      );
+    }
+    finally {
+      lifecycle.stop();
+    }
+  }
+
+  @Test
+  public void testSilentProxyCONNECT() throws Throwable
+  {
+    final Lifecycle lifecycle = new Lifecycle();
+    try {
+      final HttpClientConfig config = HttpClientConfig
+          .builder()
+          .withSslContext(SSLContext.getDefault())
+          .withHttpProxyConfig(new HttpClientProxyConfig("localhost", silentServerSocket.getLocalPort(), null, null))
+          .withSslHandshakeTimeout(Duration.millis(500))
+          .build();
+      final HttpClient client = HttpClientInit.createClient(config, lifecycle);
+
+      final long start = System.nanoTime();
+      final ListenableFuture<StatusResponseHolder> response = client
+          .go(
+              new Request(HttpMethod.GET, new URL("https://example.com/")),
+              StatusResponseHandler.getInstance()
+          );
+
+      final ExecutionException exception = Assertions.assertThrows(
+          ExecutionException.class,
+          () -> response.get(10, TimeUnit.SECONDS)
+      );
+      final long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+      // NettyHttpClient wraps the pool failure as "Faulty channel in resource pool"; walk the cause
+      // chain to find our CONNECT-timeout ChannelException underneath.
+      boolean foundConnectTimeout = false;
+      for (Throwable t = exception; t != null; t = t.getCause()) {
+        if (t.getMessage() != null && t.getMessage().contains("Timed out") && t.getMessage().contains("CONNECT")) {
+          foundConnectTimeout = true;
+          break;
+        }
+      }
+      Assertions.assertTrue(foundConnectTimeout, "expected CONNECT timeout in cause chain, got " + exception);
+      // Loose upper bound: request should have failed well before the get() timeout.
+      Assertions.assertTrue(elapsedMs < 5_000, "CONNECT wait was not bounded, took " + elapsedMs + "ms");
+    }
+    finally {
+      lifecycle.stop();
+    }
+  }
+}

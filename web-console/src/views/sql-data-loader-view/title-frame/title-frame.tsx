@@ -17,7 +17,8 @@
  */
 
 import classNames from 'classnames';
-import React, { ReactNode } from 'react';
+import type { ReactNode } from 'react';
+import React from 'react';
 
 import './title-frame.scss';
 
@@ -37,7 +38,7 @@ export const TitleFrame = React.memo(function TitleFrame(props: TitleFrameProps)
       <h1 className="titles">
         {title} <span className="slash">/</span> {subtitle}
       </h1>
-      {toolbar && <div className="toolbar">{toolbar}</div>}
+      {!!toolbar && <div className="toolbar">{toolbar}</div>}
       {children}
     </div>
   );

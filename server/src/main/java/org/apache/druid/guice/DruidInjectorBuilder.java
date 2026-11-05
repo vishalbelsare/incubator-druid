@@ -25,6 +25,7 @@ import com.google.inject.Injector;
 import com.google.inject.Key;
 import com.google.inject.Module;
 import org.apache.druid.discovery.NodeRole;
+import org.apache.druid.guice.annotations.ExcludeScope;
 import org.apache.druid.guice.annotations.Json;
 import org.apache.druid.guice.annotations.LoadScope;
 import org.apache.druid.guice.annotations.Smile;
@@ -33,11 +34,9 @@ import org.apache.druid.java.util.common.ISE;
 import org.apache.druid.java.util.common.logger.Logger;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 /**
  * Druid-enabled injector builder which supports {@link DruidModule}s, module classes
@@ -61,6 +60,7 @@ public class DruidInjectorBuilder
   private final ObjectMapper smileMapper;
   private final Set<NodeRole> nodeRoles;
   private final ModulesConfig modulesConfig;
+  private boolean ignoreLoadScopes;
 
   public DruidInjectorBuilder(final Injector baseInjector)
   {
@@ -83,12 +83,24 @@ public class DruidInjectorBuilder
     this.modulesConfig = from.modulesConfig;
     this.jsonMapper = from.jsonMapper;
     this.smileMapper = from.smileMapper;
+    this.ignoreLoadScopes = from.ignoreLoadScopes;
+  }
+
+  /**
+   * Ignore load scope annotations on modules. Primarily for testing where a unit
+   * test is not any Druid node, and may wish to load a module that is annotated
+   * with a load scope.
+   */
+  public DruidInjectorBuilder ignoreLoadScopes()
+  {
+    this.ignoreLoadScopes = true;
+    return this;
   }
 
   /**
    * Add an arbitrary set of modules.
    */
-  public DruidInjectorBuilder add(Object...input)
+  public DruidInjectorBuilder add(Object... input)
   {
     for (Object o : input) {
       addInput(o);
@@ -96,7 +108,7 @@ public class DruidInjectorBuilder
     return this;
   }
 
-  public DruidInjectorBuilder addModules(Module...inputs)
+  public DruidInjectorBuilder addModules(Module... inputs)
   {
     for (Object o : inputs) {
       addInput(o);
@@ -104,7 +116,7 @@ public class DruidInjectorBuilder
     return this;
   }
 
-  public DruidInjectorBuilder addAll(List<? extends Object> inputs)
+  public DruidInjectorBuilder addAll(Iterable<? extends Object> inputs)
   {
     for (Object o : inputs) {
       addInput(o);
@@ -127,7 +139,7 @@ public class DruidInjectorBuilder
     } else if (input instanceof Class) {
       return addClass((Class<?>) input);
     } else {
-      throw new ISE("Unknown module type[%s]", input.getClass());
+      throw new ISE("Unknown module type [%s]", input.getClass());
     }
   }
 
@@ -146,7 +158,7 @@ public class DruidInjectorBuilder
 
   public DruidInjectorBuilder addClass(Class<?> input)
   {
-    if (!acceptModule((Class<?>) input)) {
+    if (!acceptModule(input)) {
       return this;
     }
     if (DruidModule.class.isAssignableFrom(input)) {
@@ -173,18 +185,36 @@ public class DruidInjectorBuilder
     // Modules config is optional: it won't be present in tests or clients.
     String moduleClassName = moduleClass.getName();
     if (moduleClassName != null && modulesConfig.getExcludeList().contains(moduleClassName)) {
-      log.info("Not loading module [%s] because it is present in excludeList", moduleClassName);
+      log.info("Not loading module %s because it is present in excludeList", moduleClassName);
       return false;
+    }
+
+    // Tests don't have node roles, and so want to load the given modules
+    // regardless of the node roles provided.
+    if (ignoreLoadScopes) {
+      return true;
+    }
+
+    // check exclusions first
+    ExcludeScope excludeScope = moduleClass.getAnnotation(ExcludeScope.class);
+    if (excludeScope != null) {
+      for (String exclusion : excludeScope.roles()) {
+        if (nodeRoles.contains(NodeRole.fromJsonName(exclusion))) {
+          return false;
+        }
+      }
     }
     LoadScope loadScope = moduleClass.getAnnotation(LoadScope.class);
     if (loadScope == null) {
       // always load if annotation is not specified
       return true;
     }
-    Set<NodeRole> rolesPredicate = Arrays.stream(loadScope.roles())
-                                         .map(NodeRole::fromJsonName)
-                                         .collect(Collectors.toSet());
-    return rolesPredicate.stream().anyMatch(nodeRoles::contains);
+    for (String role : loadScope.roles()) {
+      if (nodeRoles.contains(NodeRole.fromJsonName(role))) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private void registerJacksonModules(DruidModule module)
@@ -203,5 +233,10 @@ public class DruidInjectorBuilder
   public Injector build()
   {
     return Guice.createInjector(modules);
+  }
+
+  public Injector baseInjector()
+  {
+    return baseInjector;
   }
 }

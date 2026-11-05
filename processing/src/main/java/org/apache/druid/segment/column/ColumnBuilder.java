@@ -21,9 +21,12 @@ package org.apache.druid.segment.column;
 
 import com.google.common.base.Preconditions;
 import com.google.common.base.Supplier;
+import com.google.common.collect.Interner;
+import com.google.common.collect.Interners;
 import org.apache.druid.collections.bitmap.ImmutableBitmap;
 import org.apache.druid.java.util.common.ISE;
-import org.apache.druid.java.util.common.io.smoosh.SmooshedFileMapper;
+import org.apache.druid.segment.file.SegmentFileMapper;
+import org.apache.druid.segment.nested.NestedCommonFormatColumn;
 import org.apache.druid.segment.serde.NoIndexesColumnIndexSupplier;
 import org.apache.druid.segment.serde.NullValueIndexSupplier;
 
@@ -33,6 +36,8 @@ import javax.annotation.Nullable;
  */
 public class ColumnBuilder
 {
+  private static final Interner<ColumnFormat> FORMAT_INTERNER = Interners.newWeakInterner();
+
   private final ColumnCapabilitiesImpl capabilitiesBuilder = ColumnCapabilitiesImpl.createDefault();
 
   @Nullable
@@ -40,22 +45,31 @@ public class ColumnBuilder
   @Nullable
   private ColumnIndexSupplier indexSupplier = NoIndexesColumnIndexSupplier.getInstance();
   @Nullable
-  private SmooshedFileMapper fileMapper = null;
+  private SegmentFileMapper fileMapper = null;
+
+  @Nullable
+  private ColumnFormat columnFormat = null;
 
   public ColumnCapabilitiesImpl getCapabilitiesBuilder()
   {
     return capabilitiesBuilder;
   }
 
-  public ColumnBuilder setFileMapper(SmooshedFileMapper fileMapper)
+  public ColumnBuilder setFileMapper(SegmentFileMapper fileMapper)
   {
     this.fileMapper = fileMapper;
     return this;
   }
 
-  public SmooshedFileMapper getFileMapper()
+  public SegmentFileMapper getFileMapper()
   {
     return this.fileMapper;
+  }
+
+  public ColumnBuilder setType(ColumnType type)
+  {
+    this.capabilitiesBuilder.setType(type);
+    return this;
   }
 
   public ColumnBuilder setType(ValueType type)
@@ -86,13 +100,6 @@ public class ColumnBuilder
     return this;
   }
 
-  @SuppressWarnings("unused")
-  public ColumnBuilder setFilterable(boolean filterable)
-  {
-    this.capabilitiesBuilder.setFilterable(filterable);
-    return this;
-  }
-
   public ColumnBuilder setComplexColumnSupplier(Supplier<? extends ComplexColumn> columnSupplier)
   {
     checkColumnSupplierNotSet();
@@ -101,6 +108,13 @@ public class ColumnBuilder
   }
 
   public ColumnBuilder setNumericColumnSupplier(Supplier<? extends NumericColumn> columnSupplier)
+  {
+    checkColumnSupplierNotSet();
+    this.columnSupplier = columnSupplier;
+    return this;
+  }
+
+  public ColumnBuilder setNestedCommonFormatColumnSupplier(Supplier<? extends NestedCommonFormatColumn> columnSupplier)
   {
     checkColumnSupplierNotSet();
     this.columnSupplier = columnSupplier;
@@ -138,11 +152,24 @@ public class ColumnBuilder
     return this;
   }
 
-  public ColumnHolder build()
+  public ColumnBuilder setColumnFormat(ColumnFormat columnFormat)
+  {
+    this.columnFormat = columnFormat;
+    return this;
+  }
+
+  /**
+   * Builds the column holder. Its capabilities and format are interned, since many columns share them.
+   */
+  public BaseColumnHolder build()
   {
     Preconditions.checkState(capabilitiesBuilder.getType() != null, "Type must be set.");
 
-    return new SimpleColumnHolder(capabilitiesBuilder, columnSupplier, indexSupplier);
+    final ColumnCapabilities capabilities = ImmutableColumnCapabilities.internedOf(capabilitiesBuilder);
+    final ColumnFormat format = FORMAT_INTERNER.intern(
+        columnFormat == null ? new CapabilitiesBasedFormat(capabilities) : columnFormat
+    );
+    return new SimpleColumnHolder(capabilities, format, columnSupplier, indexSupplier);
   }
 
   private void checkColumnSupplierNotSet()

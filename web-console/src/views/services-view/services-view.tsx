@@ -16,108 +16,138 @@
  * limitations under the License.
  */
 
-import { Button, ButtonGroup, Intent, Label, MenuItem } from '@blueprintjs/core';
+import { Button, ButtonGroup, Intent, Label, MenuItem, Tag } from '@blueprintjs/core';
 import { IconNames } from '@blueprintjs/icons';
-import { sum } from 'd3-array';
-import React from 'react';
-import ReactTable, { Filter } from 'react-table';
+import { max, sum } from 'd3-array';
+import memoize from 'memoize-one';
+import React, { createContext, useContext } from 'react';
 
 import {
   ACTION_COLUMN_ID,
   ACTION_COLUMN_LABEL,
   ACTION_COLUMN_WIDTH,
   ActionCell,
+  type ColumnFilter,
+  ConsoleTable,
+  type ConsoleTableColumn,
+  DEFAULT_TABLE_CLASS_NAME,
   MoreButton,
   RefreshButton,
+  STANDARD_TABLE_PAGE_SIZE,
+  STANDARD_TABLE_PAGE_SIZE_OPTIONS,
+  suggestibleFilterInput,
+  TableClickableCell,
   TableColumnSelector,
+  type TableColumnSelectorColumn,
   TableFilterableCell,
   ViewControlBar,
 } from '../../components';
-import { AsyncActionDialog } from '../../dialogs';
-import { QueryWithContext } from '../../druid-models';
-import { STANDARD_TABLE_PAGE_SIZE, STANDARD_TABLE_PAGE_SIZE_OPTIONS } from '../../react-table';
-import { Api } from '../../singletons';
+import { AsyncActionDialog, ServiceTableActionDialog } from '../../dialogs';
+import type { CoordinatorDynamicConfig, QueryWithContext } from '../../druid-models';
+import { getConsoleViewIcon } from '../../druid-models';
+import type { Capabilities, CapabilitiesMode } from '../../helpers';
+import { Api, AppToaster } from '../../singletons';
+import type { AuxiliaryQueryFn, NumberLike } from '../../utils';
 import {
-  Capabilities,
-  CapabilitiesMode,
+  assemble,
   deepGet,
+  filterMap,
   formatBytes,
   formatBytesCompact,
-  hasPopoverOpen,
+  formatDate,
+  formatDurationWithMsIfNeeded,
+  formatInteger,
+  getApiArray,
+  getApiArrayFromKey,
+  hasOverlayOpen,
   LocalStorageBackedVisibility,
   LocalStorageKeys,
   lookupBy,
-  NumberLike,
   oneOf,
   pluralIfNeeded,
   queryDruidSql,
   QueryManager,
   QueryState,
+  ResultWithAuxiliaryWork,
+  twoLines,
 } from '../../utils';
-import { BasicAction } from '../../utils/basic-action';
+import type { BasicAction } from '../../utils/basic-action';
+import { TableFilter, TableFilters } from '../../utils/table-filters';
+
+import { FillIndicator } from './fill-indicator/fill-indicator';
 
 import './services-view.scss';
 
-const allColumns: string[] = [
-  'Service',
-  'Type',
-  'Tier',
-  'Host',
-  'Port',
-  'Current size',
-  'Max size',
-  'Usage',
-  'Detail',
-  ACTION_COLUMN_LABEL,
-];
-
-const tableColumns: Record<CapabilitiesMode, string[]> = {
-  'full': allColumns,
-  'no-sql': allColumns,
-  'no-proxy': ['Service', 'Type', 'Tier', 'Host', 'Port', 'Current size', 'Max size', 'Usage'],
+const TABLE_COLUMNS_BY_MODE: Record<CapabilitiesMode, TableColumnSelectorColumn[]> = {
+  'full': [
+    'Service',
+    'Type',
+    'Tier',
+    'Host',
+    'Port',
+    'Assigned size',
+    'Effective size',
+    'Usage',
+    'Start time',
+    'Version',
+    'Build revision',
+    'Available processors',
+    'Total memory',
+    'Labels',
+    'Detail',
+  ],
+  'no-sql': [
+    'Service',
+    'Type',
+    'Tier',
+    'Host',
+    'Port',
+    'Assigned size',
+    'Effective size',
+    'Usage',
+    'Detail',
+  ],
+  'no-proxy': [
+    'Service',
+    'Type',
+    'Tier',
+    'Host',
+    'Port',
+    'Assigned size',
+    'Effective size',
+    'Usage',
+    'Start time',
+    'Version',
+    'Build revision',
+  ],
 };
 
-function formatQueues(
-  segmentsToLoad: NumberLike,
-  segmentsToLoadSize: NumberLike,
-  segmentsToDrop: NumberLike,
-  segmentsToDropSize: NumberLike,
-): string {
-  const queueParts: string[] = [];
-  if (segmentsToLoad) {
-    queueParts.push(
-      `${pluralIfNeeded(segmentsToLoad, 'segment')} to load (${formatBytesCompact(
-        segmentsToLoadSize,
-      )})`,
-    );
-  }
-  if (segmentsToDrop) {
-    queueParts.push(
-      `${pluralIfNeeded(segmentsToDrop, 'segment')} to drop (${formatBytesCompact(
-        segmentsToDropSize,
-      )})`,
-    );
-  }
-  return queueParts.join(', ') || 'Empty load/drop queues';
+interface ServicesQuery {
+  capabilities: Capabilities;
+  visibleColumns: LocalStorageBackedVisibility;
 }
 
 export interface ServicesViewProps {
+  filters: TableFilters;
+  onFiltersChange(filters: TableFilters): void;
   goToQuery(queryWithContext: QueryWithContext): void;
   capabilities: Capabilities;
 }
 
 export interface ServicesViewState {
-  servicesState: QueryState<ServiceResultRow[]>;
-  serviceFilter: Filter[];
+  servicesState: QueryState<ServicesWithAuxiliaryInfo>;
   groupServicesBy?: 'service_type' | 'tier';
 
   middleManagerDisableWorkerHost?: string;
   middleManagerEnableWorkerHost?: string;
 
+  serviceTableActionDialogServer?: string;
+  serviceTableActionDialogActions: BasicAction[];
+
   visibleColumns: LocalStorageBackedVisibility;
 }
 
-interface ServiceQueryResultRow {
+interface ServiceResultRow {
   readonly service: string;
   readonly service_type: string;
   readonly tier: string;
@@ -125,18 +155,234 @@ interface ServiceQueryResultRow {
   readonly host: string;
   readonly curr_size: NumberLike;
   readonly max_size: NumberLike;
+  readonly storage_size: NumberLike;
+  readonly effective_size: NumberLike;
   readonly plaintext_port: number;
   readonly tls_port: number;
+  readonly start_time: string;
+  readonly version: string;
+  readonly build_revision: string;
+  readonly labels: string | null;
+  readonly available_processors: NumberLike;
+  readonly total_memory: NumberLike;
 }
 
-interface LoadQueueStatus {
+interface CloneStatusInfo {
+  readonly sourceServer: string;
+  readonly targetServer: string;
+  readonly state: string;
+  readonly segmentLoadsRemaining: number;
+  readonly segmentDropsRemaining: number;
+  readonly bytesToLoad: NumberLike;
+}
+
+interface ServerModeInfo {
+  readonly turboLoadingNodes: Set<string>;
+  readonly decommissioningNodes: Set<string>;
+}
+
+interface ServicesWithAuxiliaryInfo {
+  readonly services: ServiceResultRow[];
+  readonly loadQueueInfo: Record<string, LoadQueueInfo>;
+  readonly cloneStatus: Record<string, CloneStatusInfo>;
+  readonly serverMode: ServerModeInfo;
+  readonly workerInfo: Record<string, WorkerInfo>;
+}
+
+export const LoadQueueInfoContext = createContext<Record<string, LoadQueueInfo>>({});
+export const CloneStatusContext = createContext<Record<string, CloneStatusInfo>>({});
+
+const DEFAULT_SERVER_MODE: ServerModeInfo = {
+  turboLoadingNodes: new Set(),
+  decommissioningNodes: new Set(),
+};
+export const ServerModeContext = createContext<ServerModeInfo>(DEFAULT_SERVER_MODE);
+
+interface LoadQueueInfo {
   readonly segmentsToDrop: NumberLike;
   readonly segmentsToDropSize: NumberLike;
   readonly segmentsToLoad: NumberLike;
   readonly segmentsToLoadSize: NumberLike;
+  readonly expectedLoadTimeMillis: NumberLike;
 }
 
-interface MiddleManagerQueryResultRow {
+function formatLoadQueueInfo({
+  segmentsToDrop,
+  segmentsToDropSize,
+  segmentsToLoad,
+  segmentsToLoadSize,
+  expectedLoadTimeMillis,
+}: LoadQueueInfo): string {
+  return (
+    assemble(
+      segmentsToLoad
+        ? `${pluralIfNeeded(segmentsToLoad, 'segment')} to load (${formatBytesCompact(
+            segmentsToLoadSize,
+          )}${
+            expectedLoadTimeMillis
+              ? `, ${formatDurationWithMsIfNeeded(expectedLoadTimeMillis)}`
+              : ''
+          })`
+        : undefined,
+      segmentsToDrop
+        ? `${pluralIfNeeded(segmentsToDrop, 'segment')} to drop (${formatBytesCompact(
+            segmentsToDropSize,
+          )})`
+        : undefined,
+    ).join(', ') || 'Empty load/drop queues'
+  );
+}
+
+function aggregateLoadQueueInfos(loadQueueInfos: LoadQueueInfo[]): LoadQueueInfo {
+  return {
+    segmentsToLoad: sum(loadQueueInfos, s => Number(s.segmentsToLoad) || 0),
+    segmentsToLoadSize: sum(loadQueueInfos, s => Number(s.segmentsToLoadSize) || 0),
+    segmentsToDrop: sum(loadQueueInfos, s => Number(s.segmentsToDrop) || 0),
+    segmentsToDropSize: sum(loadQueueInfos, s => Number(s.segmentsToDropSize) || 0),
+    expectedLoadTimeMillis: max(loadQueueInfos, s => Number(s.expectedLoadTimeMillis) || 0) || 0,
+  };
+}
+
+interface DetailCellProps {
+  original: ServiceResultRow;
+  workerInfoLookup: Record<string, WorkerInfo>;
+}
+
+function DetailCell({ original, workerInfoLookup }: DetailCellProps) {
+  const { service_type, service, is_leader } = original;
+  const loadQueueInfoContext = useContext(LoadQueueInfoContext);
+  const cloneStatusContext = useContext(CloneStatusContext);
+  const serverModeInfo = useContext(ServerModeContext);
+
+  switch (service_type) {
+    case 'middle_manager':
+    case 'indexer': {
+      const workerInfo = workerInfoLookup[service];
+      if (!workerInfo) return null;
+
+      if (workerInfo.worker.disabled || workerInfo.worker.version === '') return <>Disabled</>;
+
+      const details: string[] = [];
+      if (workerInfo.lastCompletedTaskTime) {
+        details.push(`Last completed task: ${formatDate(workerInfo.lastCompletedTaskTime)}`);
+      }
+      if (workerInfo.blacklistedUntil) {
+        details.push(`Blacklisted until: ${formatDate(workerInfo.blacklistedUntil)}`);
+      }
+      return <>{details.join(' ') || null}</>;
+    }
+
+    case 'coordinator':
+    case 'overlord':
+      return <>{is_leader === 1 ? 'Leader' : ''}</>;
+
+    case 'historical': {
+      const loadQueueInfo = loadQueueInfoContext[service];
+      const cloneInfo = cloneStatusContext[service];
+
+      const parts: string[] = [];
+      if (serverModeInfo.decommissioningNodes.has(service)) {
+        parts.push('Decommissioning');
+      }
+      if (serverModeInfo.turboLoadingNodes.has(service)) {
+        parts.push('Turbo Loading');
+      }
+      if (loadQueueInfo) {
+        parts.push(formatLoadQueueInfo(loadQueueInfo));
+      }
+      if (cloneInfo) {
+        if (cloneInfo.state === 'SOURCE_SERVER_MISSING') {
+          parts.push(`Clone of ${cloneInfo.sourceServer} (source missing)`);
+        } else if (cloneInfo.segmentLoadsRemaining > 0 || cloneInfo.segmentDropsRemaining > 0) {
+          const details: string[] = [];
+          if (cloneInfo.segmentLoadsRemaining > 0) {
+            details.push(
+              `${pluralIfNeeded(
+                cloneInfo.segmentLoadsRemaining,
+                'segment',
+              )} to load (${formatBytesCompact(cloneInfo.bytesToLoad)})`,
+            );
+          }
+          if (cloneInfo.segmentDropsRemaining > 0) {
+            details.push(`${pluralIfNeeded(cloneInfo.segmentDropsRemaining, 'segment')} to drop`);
+          }
+          parts.push(`Cloning from ${cloneInfo.sourceServer}: ${details.join(', ')}`);
+        } else {
+          parts.push(`Clone of ${cloneInfo.sourceServer} (synced)`);
+        }
+      }
+      return <>{parts.join('; ') || null}</>;
+    }
+
+    default:
+      return null;
+  }
+}
+
+interface AggregatedDetailCellProps {
+  subRows: { _original: ServiceResultRow }[];
+}
+
+function AggregatedDetailCell({ subRows }: AggregatedDetailCellProps) {
+  const loadQueueInfoContext = useContext(LoadQueueInfoContext);
+  const cloneStatusContext = useContext(CloneStatusContext);
+  const serverModeInfo = useContext(ServerModeContext);
+  const historicalRows = subRows.map(r => r._original).filter(r => r.service_type === 'historical');
+  if (!historicalRows.length) return null;
+
+  const parts: string[] = [];
+
+  const decommissioningCount = historicalRows.filter(r =>
+    serverModeInfo.decommissioningNodes.has(r.service),
+  ).length;
+  if (decommissioningCount) {
+    parts.push(`${decommissioningCount} Decommissioning`);
+  }
+
+  const turboLoadingCount = historicalRows.filter(r =>
+    serverModeInfo.turboLoadingNodes.has(r.service),
+  ).length;
+  if (turboLoadingCount) {
+    parts.push(`${turboLoadingCount} Turbo Loading`);
+  }
+
+  const loadQueueInfos: LoadQueueInfo[] = filterMap(
+    historicalRows,
+    r => loadQueueInfoContext[r.service],
+  );
+  if (loadQueueInfos.length) {
+    parts.push(formatLoadQueueInfo(aggregateLoadQueueInfos(loadQueueInfos)));
+  }
+
+  let clonedCount = 0;
+  let cloningCount = 0;
+  let cloningErrorCount = 0;
+  for (const row of historicalRows) {
+    const cloneInfo = cloneStatusContext[row.service];
+    if (!cloneInfo) continue;
+    if (cloneInfo.state === 'SOURCE_SERVER_MISSING') {
+      cloningErrorCount++;
+    } else if (cloneInfo.segmentLoadsRemaining > 0 || cloneInfo.segmentDropsRemaining > 0) {
+      cloningCount++;
+    } else {
+      clonedCount++;
+    }
+  }
+  const cloneParts: string[] = [];
+  if (clonedCount) cloneParts.push(`${clonedCount} cloned`);
+  if (cloningCount) cloneParts.push(`${cloningCount} cloning`);
+  if (cloningErrorCount) cloneParts.push(pluralIfNeeded(cloningErrorCount, 'cloning error'));
+  if (cloneParts.length) parts.push(cloneParts.join(', '));
+
+  return <>{parts.join('; ') || null}</>;
+}
+
+function defaultDisplayFn(value: any): string {
+  if (value === undefined || value === null) return '';
+  return String(value);
+}
+
+interface WorkerInfo {
   readonly availabilityGroups: string[];
   readonly blacklistedUntil: string | null;
   readonly currCapacityUsed: NumberLike;
@@ -150,16 +396,12 @@ interface MiddleManagerQueryResultRow {
     readonly scheme: string;
     readonly version: string;
     readonly category: string;
+    readonly disabled?: boolean;
   };
 }
 
-interface ServiceResultRow
-  extends ServiceQueryResultRow,
-    Partial<LoadQueueStatus>,
-    Partial<MiddleManagerQueryResultRow> {}
-
 export class ServicesView extends React.PureComponent<ServicesViewProps, ServicesViewState> {
-  private readonly serviceQueryManager: QueryManager<Capabilities, ServiceResultRow[]>;
+  private readonly serviceQueryManager: QueryManager<ServicesQuery, ServicesWithAuxiliaryInfo>;
 
   // Ranking
   //   coordinator => 8
@@ -180,7 +422,15 @@ export class ServicesView extends React.PureComponent<ServicesViewProps, Service
   "tls_port",
   "curr_size",
   "max_size",
-  "is_leader"
+  "storage_size",
+  CASE WHEN "storage_size" < "max_size" THEN "storage_size" ELSE "max_size" END AS "effective_size",
+  "is_leader",
+  "start_time",
+  "version",
+  "build_revision",
+  "labels",
+  "available_processors",
+  "total_memory"
 FROM sys.servers
 ORDER BY
   (
@@ -198,28 +448,12 @@ ORDER BY
   ) DESC,
   "service" DESC`;
 
-  static async getServices(): Promise<ServiceQueryResultRow[]> {
-    const allServiceResp = await Api.instance.get('/druid/coordinator/v1/servers?simple');
-    const allServices = allServiceResp.data;
-    return allServices.map((s: any) => {
-      return {
-        service: s.host,
-        service_type: s.type === 'indexer-executor' ? 'peon' : s.type,
-        tier: s.tier,
-        host: s.host.split(':')[0],
-        plaintext_port: parseInt(s.host.split(':')[1], 10),
-        curr_size: s.currSize,
-        max_size: s.maxSize,
-        tls_port: -1,
-      };
-    });
-  }
-
-  constructor(props: ServicesViewProps, context: any) {
-    super(props, context);
+  constructor(props: ServicesViewProps) {
+    super(props);
     this.state = {
       servicesState: QueryState.INIT,
-      serviceFilter: [],
+
+      serviceTableActionDialogActions: [],
 
       visibleColumns: new LocalStorageBackedVisibility(
         LocalStorageKeys.SERVICE_TABLE_COLUMN_SELECTION,
@@ -227,64 +461,160 @@ ORDER BY
     };
 
     this.serviceQueryManager = new QueryManager({
-      processQuery: async capabilities => {
-        let services: ServiceQueryResultRow[];
+      processQuery: async ({ capabilities, visibleColumns }, signal) => {
+        let services: ServiceResultRow[];
         if (capabilities.hasSql()) {
-          services = await queryDruidSql({ query: ServicesView.SERVICE_SQL });
+          services = await queryDruidSql(
+            { query: ServicesView.SERVICE_SQL, context: { engine: 'native' } },
+            signal,
+          );
         } else if (capabilities.hasCoordinatorAccess()) {
-          services = await ServicesView.getServices();
+          services = (await getApiArray('/druid/coordinator/v1/servers?simple', signal)).map(
+            (s: any): ServiceResultRow => {
+              const hostParts = s.host.split(':');
+              const port = parseInt(hostParts[1], 10);
+              return {
+                service: s.host,
+                service_type: s.type === 'indexer-executor' ? 'peon' : s.type,
+                tier: s.tier,
+                host: hostParts[0],
+                plaintext_port: port < 9000 ? port : -1,
+                tls_port: port < 9000 ? -1 : port,
+                curr_size: s.currSize,
+                max_size: s.maxSize,
+                storage_size: s.maxSize,
+                effective_size: s.maxSize,
+                start_time: '1970-01-01T00:00:00Z',
+                is_leader: 0,
+                version: '',
+                build_revision: '',
+                labels: null,
+                available_processors: -1,
+                total_memory: -1,
+              };
+            },
+          );
         } else {
           throw new Error(`must have SQL or coordinator access`);
         }
 
-        if (capabilities.hasCoordinatorAccess()) {
-          const loadQueueResponse = await Api.instance.get(
-            '/druid/coordinator/v1/loadqueue?simple',
-          );
-          const loadQueues: Record<string, LoadQueueStatus> = loadQueueResponse.data;
-          services = services.map(s => {
-            const loadQueueInfo = loadQueues[s.service];
-            if (loadQueueInfo) {
-              s = { ...s, ...loadQueueInfo };
+        const auxiliaryQueries: AuxiliaryQueryFn<ServicesWithAuxiliaryInfo>[] = [];
+
+        if (capabilities.hasCoordinatorAccess() && visibleColumns.shown('Detail')) {
+          auxiliaryQueries.push(async (servicesWithAuxiliaryInfo, signal) => {
+            try {
+              const loadQueueInfos = (
+                await Api.instance.get<Record<string, LoadQueueInfo>>(
+                  '/druid/coordinator/v1/loadqueue?simple',
+                  { signal },
+                )
+              ).data;
+              return {
+                ...servicesWithAuxiliaryInfo,
+                loadQueueInfo: loadQueueInfos,
+              };
+            } catch {
+              AppToaster.show({
+                icon: IconNames.ERROR,
+                intent: Intent.DANGER,
+                message: 'There was an error getting the load queue info',
+              });
+              return servicesWithAuxiliaryInfo;
             }
-            return s;
+          });
+        }
+
+        if (capabilities.hasCoordinatorAccess() && visibleColumns.shown('Detail')) {
+          auxiliaryQueries.push(async (servicesWithAuxiliaryInfo, signal) => {
+            const [cloneStatusResp, configResp] = await Promise.all([
+              getApiArrayFromKey<CloneStatusInfo>(
+                '/druid/coordinator/v1/config/cloneStatus',
+                'cloneStatus',
+                signal,
+              ).catch(() => {
+                AppToaster.show({
+                  icon: IconNames.ERROR,
+                  intent: Intent.DANGER,
+                  message: 'There was an error getting the clone status map',
+                });
+                return [] as CloneStatusInfo[];
+              }),
+              Api.instance
+                .get<CoordinatorDynamicConfig>('/druid/coordinator/v1/config', { signal })
+                .then(r => r.data)
+                .catch(() => {
+                  AppToaster.show({
+                    icon: IconNames.ERROR,
+                    intent: Intent.DANGER,
+                    message: 'There was an error getting the coordinator dynamic config',
+                  });
+                  return null;
+                }),
+            ]);
+
+            const cloneStatusLookup: Record<string, CloneStatusInfo> = lookupBy(
+              cloneStatusResp,
+              s => s.targetServer,
+            );
+
+            return {
+              ...servicesWithAuxiliaryInfo,
+              cloneStatus: cloneStatusLookup,
+              ...(configResp
+                ? {
+                    serverMode: {
+                      turboLoadingNodes: new Set<string>(configResp.turboLoadingNodes || []),
+                      decommissioningNodes: new Set<string>(configResp.decommissioningNodes || []),
+                    },
+                  }
+                : {}),
+            };
           });
         }
 
         if (capabilities.hasOverlordAccess()) {
-          let middleManagers: MiddleManagerQueryResultRow[];
-          try {
-            const middleManagerResponse = await Api.instance.get('/druid/indexer/v1/workers');
-            middleManagers = middleManagerResponse.data;
-          } catch (e) {
-            if (
-              e.response &&
-              typeof e.response.data === 'object' &&
-              e.response.data.error === 'Task Runner does not support worker listing'
-            ) {
+          auxiliaryQueries.push(async (servicesWithAuxiliaryInfo, signal) => {
+            try {
+              const workerInfos = await getApiArray<WorkerInfo>(
+                '/druid/indexer/v1/workers',
+                signal,
+              );
+
+              const workerInfoLookup: Record<string, WorkerInfo> = lookupBy(
+                workerInfos,
+                m => m.worker?.host,
+              );
+
+              return {
+                ...servicesWithAuxiliaryInfo,
+                workerInfo: workerInfoLookup,
+              };
+            } catch (e) {
               // Swallow this error because it simply a reflection of a local task runner.
-              middleManagers = [];
-            } else {
-              // Otherwise re-throw.
-              throw e;
+              if (
+                deepGet(e, 'response.data.error') !== 'Task Runner does not support worker listing'
+              ) {
+                AppToaster.show({
+                  icon: IconNames.ERROR,
+                  intent: Intent.DANGER,
+                  message: 'There was an error getting the worker info',
+                });
+              }
+              return servicesWithAuxiliaryInfo;
             }
-          }
-
-          const middleManagersLookup: Record<string, MiddleManagerQueryResultRow> = lookupBy(
-            middleManagers,
-            m => m.worker.host,
-          );
-
-          services = services.map(s => {
-            const middleManagerInfo = middleManagersLookup[s.service];
-            if (middleManagerInfo) {
-              s = { ...s, ...middleManagerInfo };
-            }
-            return s;
           });
         }
 
-        return services;
+        return new ResultWithAuxiliaryWork<ServicesWithAuxiliaryInfo>(
+          {
+            services,
+            loadQueueInfo: {},
+            cloneStatus: {},
+            serverMode: DEFAULT_SERVER_MODE,
+            workerInfo: {},
+          },
+          auxiliaryQueries,
+        );
       },
       onStateChange: servicesState => {
         this.setState({
@@ -295,325 +625,498 @@ ORDER BY
   }
 
   componentDidMount(): void {
-    const { capabilities } = this.props;
-    this.serviceQueryManager.runQuery(capabilities);
+    this.fetchData();
   }
 
   componentWillUnmount(): void {
     this.serviceQueryManager.terminate();
   }
 
-  private renderFilterableCell(field: string) {
-    const { serviceFilter } = this.state;
+  private readonly fetchData = () => {
+    const { capabilities } = this.props;
+    const { visibleColumns } = this.state;
+    this.serviceQueryManager.runQuery({ capabilities, visibleColumns });
+  };
 
-    return (row: { value: any }) => (
-      <TableFilterableCell
-        field={field}
-        value={row.value}
-        filters={serviceFilter}
-        onFiltersChange={filters => this.setState({ serviceFilter: filters })}
-      >
-        {row.value}
-      </TableFilterableCell>
-    );
+  private renderFilterableCell(
+    field: string,
+    displayFn: (value: string) => string = defaultDisplayFn,
+  ) {
+    const { filters, onFiltersChange } = this.props;
+
+    return function FilterableCell(row: { value: any }) {
+      return (
+        <TableFilterableCell
+          field={field}
+          value={row.value}
+          filters={filters}
+          onFiltersChange={onFiltersChange}
+          displayValue={displayFn(row.value)}
+        >
+          {displayFn(row.value)}
+        </TableFilterableCell>
+      );
+    };
   }
 
   renderServicesTable() {
-    const { capabilities } = this.props;
-    const { servicesState, serviceFilter, groupServicesBy, visibleColumns } = this.state;
+    const { filters, onFiltersChange } = this.props;
+    const { servicesState, groupServicesBy, visibleColumns } = this.state;
 
-    const fillIndicator = (value: number) => {
-      let formattedValue = (value * 100).toFixed(1);
-      if (formattedValue === '0.0' && value > 0) formattedValue = '~' + formattedValue;
-      return (
-        <div className="fill-indicator">
-          <div className="bar" style={{ width: `${value * 100}%` }} />
-          <div className="label">{formattedValue + '%'}</div>
-        </div>
-      );
+    const { services, loadQueueInfo, cloneStatus, serverMode, workerInfo } = servicesState.data || {
+      services: [],
+      loadQueueInfo: {},
+      cloneStatus: {},
+      serverMode: DEFAULT_SERVER_MODE,
+      workerInfo: {},
     };
 
-    const services = servicesState.data || [];
     return (
-      <ReactTable
-        data={services}
-        loading={servicesState.loading}
-        noDataText={
-          servicesState.isEmpty() ? 'No historicals' : servicesState.getErrorMessage() || ''
-        }
-        filterable
-        filtered={serviceFilter}
-        onFilteredChange={filtered => {
-          this.setState({ serviceFilter: filtered });
-        }}
-        pivotBy={groupServicesBy ? [groupServicesBy] : []}
-        defaultPageSize={STANDARD_TABLE_PAGE_SIZE}
-        pageSizeOptions={STANDARD_TABLE_PAGE_SIZE_OPTIONS}
-        showPagination={services.length > STANDARD_TABLE_PAGE_SIZE}
-        columns={[
-          {
-            Header: 'Service',
-            show: visibleColumns.shown('Service'),
-            accessor: 'service',
-            width: 300,
-            Cell: this.renderFilterableCell('service'),
-            Aggregated: () => '',
-          },
-          {
-            Header: 'Type',
-            show: visibleColumns.shown('Type'),
-            accessor: 'service_type',
-            width: 150,
-            Cell: this.renderFilterableCell('service_type'),
-          },
-          {
-            Header: 'Tier',
-            show: visibleColumns.shown('Tier'),
-            id: 'tier',
-            width: 180,
-            accessor: row => {
-              return row.tier ? row.tier : row.worker ? row.worker.category : null;
-            },
-            Cell: this.renderFilterableCell('tier'),
-          },
-          {
-            Header: 'Host',
-            show: visibleColumns.shown('Host'),
-            accessor: 'host',
-            width: 200,
-            Cell: this.renderFilterableCell('host'),
-            Aggregated: () => '',
-          },
-          {
-            Header: 'Port',
-            show: visibleColumns.shown('Port'),
-            id: 'port',
-            width: 100,
-            accessor: row => {
-              const ports: string[] = [];
-              if (row.plaintext_port !== -1) {
-                ports.push(`${row.plaintext_port} (plain)`);
+      <LoadQueueInfoContext value={loadQueueInfo}>
+        <CloneStatusContext value={cloneStatus}>
+          <ServerModeContext value={serverMode}>
+            <ConsoleTable
+              data={services}
+              loading={servicesState.loading}
+              noDataText={
+                servicesState.data?.services.length === 0
+                  ? 'No services'
+                  : servicesState.getErrorMessage() || ''
               }
-              if (row.tls_port !== -1) {
-                ports.push(`${row.tls_port} (TLS)`);
-              }
-              return ports.join(', ') || 'No port';
-            },
-            Cell: this.renderFilterableCell('port'),
-            Aggregated: () => '',
-          },
-          {
-            Header: 'Current size',
-            show: visibleColumns.shown('Current size'),
-            id: 'curr_size',
-            width: 100,
-            filterable: false,
-            accessor: 'curr_size',
-            className: 'padded',
-            Aggregated: row => {
-              if (row.row._pivotVal !== 'historical') return '';
-              const originals = row.subRows.map(r => r._original);
-              const totalCurr = sum(originals, s => s.curr_size);
-              return formatBytes(totalCurr);
-            },
-            Cell: row => {
-              if (row.aggregated || row.original.service_type !== 'historical') return '';
-              if (row.value === null) return '';
-              return formatBytes(row.value);
-            },
-          },
-          {
-            Header: 'Max size',
-            show: visibleColumns.shown('Max size'),
-            id: 'max_size',
-            width: 100,
-            filterable: false,
-            accessor: 'max_size',
-            className: 'padded',
-            Aggregated: row => {
-              if (row.row._pivotVal !== 'historical') return '';
-              const originals = row.subRows.map(r => r._original);
-              const totalMax = sum(originals, s => s.max_size);
-              return formatBytes(totalMax);
-            },
-            Cell: row => {
-              if (row.aggregated || row.original.service_type !== 'historical') return '';
-              if (row.value === null) return '';
-              return formatBytes(row.value);
-            },
-          },
-          {
-            Header: 'Usage',
-            show: visibleColumns.shown('Usage'),
-            id: 'usage',
-            width: 140,
-            filterable: false,
-            className: 'padded',
-            accessor: row => {
-              if (oneOf(row.service_type, 'middle_manager', 'indexer')) {
-                return row.worker
-                  ? (Number(row.currCapacityUsed) || 0) / Number(row.worker.capacity)
-                  : null;
-              } else {
-                return row.max_size ? Number(row.curr_size) / Number(row.max_size) : null;
-              }
-            },
-            Aggregated: row => {
-              switch (row.row._pivotVal) {
-                case 'historical': {
-                  const originalHistoricals: ServiceResultRow[] = row.subRows.map(r => r._original);
-                  const totalCurr = sum(originalHistoricals, s => Number(s.curr_size));
-                  const totalMax = sum(originalHistoricals, s => Number(s.max_size));
-                  return fillIndicator(totalCurr / totalMax);
-                }
-
-                case 'indexer':
-                case 'middle_manager': {
-                  const originalMiddleManagers: ServiceResultRow[] = row.subRows.map(
-                    r => r._original,
-                  );
-                  const totalCurrCapacityUsed = sum(
-                    originalMiddleManagers,
-                    s => Number(s.currCapacityUsed) || 0,
-                  );
-                  const totalWorkerCapacity = sum(
-                    originalMiddleManagers,
-                    s => deepGet(s, 'worker.capacity') || 0,
-                  );
-                  return `${totalCurrCapacityUsed} / ${totalWorkerCapacity} (total slots)`;
-                }
-
-                default:
-                  return '';
-              }
-            },
-            Cell: row => {
-              if (row.aggregated) return '';
-              const { service_type } = row.original;
-              switch (service_type) {
-                case 'historical':
-                  return fillIndicator(row.value);
-
-                case 'indexer':
-                case 'middle_manager': {
-                  const currCapacityUsed = deepGet(row, 'original.currCapacityUsed') || 0;
-                  const capacity = deepGet(row, 'original.worker.capacity');
-                  if (typeof capacity === 'number') {
-                    return `Slots used: ${currCapacityUsed} of ${capacity}`;
-                  } else {
-                    return 'Slots used: -';
-                  }
-                }
-
-                default:
-                  return '';
-              }
-            },
-          },
-          {
-            Header: 'Detail',
-            show: visibleColumns.shown('Detail'),
-            id: 'queue',
-            width: 400,
-            filterable: false,
-            className: 'padded',
-            accessor: row => {
-              if (oneOf(row.service_type, 'middle_manager', 'indexer')) {
-                if (deepGet(row, 'worker.version') === '') return 'Disabled';
-
-                const details: string[] = [];
-                if (row.lastCompletedTaskTime) {
-                  details.push(`Last completed task: ${row.lastCompletedTaskTime}`);
-                }
-                if (row.blacklistedUntil) {
-                  details.push(`Blacklisted until: ${row.blacklistedUntil}`);
-                }
-                return details.join(' ');
-              } else if (oneOf(row.service_type, 'coordinator', 'overlord')) {
-                return row.is_leader === 1 ? 'Leader' : '';
-              } else {
-                return (Number(row.segmentsToLoad) || 0) + (Number(row.segmentsToDrop) || 0);
-              }
-            },
-            Cell: row => {
-              if (row.aggregated) return '';
-              const { service_type } = row.original;
-              switch (service_type) {
-                case 'historical': {
-                  const { segmentsToLoad, segmentsToLoadSize, segmentsToDrop, segmentsToDropSize } =
-                    row.original;
-                  return formatQueues(
-                    segmentsToLoad,
-                    segmentsToLoadSize,
-                    segmentsToDrop,
-                    segmentsToDropSize,
-                  );
-                }
-
-                case 'indexer':
-                case 'middle_manager':
-                case 'coordinator':
-                case 'overlord':
-                  return row.value;
-
-                default:
-                  return '';
-              }
-            },
-            Aggregated: row => {
-              if (row.row._pivotVal !== 'historical') return '';
-              const originals: ServiceResultRow[] = row.subRows.map(r => r._original);
-              const segmentsToLoad = sum(originals, s => Number(s.segmentsToLoad) || 0);
-              const segmentsToLoadSize = sum(originals, s => Number(s.segmentsToLoadSize) || 0);
-              const segmentsToDrop = sum(originals, s => Number(s.segmentsToDrop) || 0);
-              const segmentsToDropSize = sum(originals, s => Number(s.segmentsToDropSize) || 0);
-              return formatQueues(
-                segmentsToLoad,
-                segmentsToLoadSize,
-                segmentsToDrop,
-                segmentsToDropSize,
-              );
-            },
-          },
-          {
-            Header: ACTION_COLUMN_LABEL,
-            show: capabilities.hasOverlordAccess() && visibleColumns.shown(ACTION_COLUMN_LABEL),
-            id: ACTION_COLUMN_ID,
-            width: ACTION_COLUMN_WIDTH,
-            accessor: row => row.worker,
-            filterable: false,
-            Cell: ({ value, aggregated }) => {
-              if (aggregated) return '';
-              if (!value) return null;
-              const disabled = value.version === '';
-              const workerActions = this.getWorkerActions(value.host, disabled);
-              return <ActionCell actions={workerActions} />;
-            },
-            Aggregated: () => '',
-          },
-        ]}
-      />
+              filterable
+              filtered={filters.toFilters()}
+              className={`centered-table ${DEFAULT_TABLE_CLASS_NAME}`}
+              onFilteredChange={filters => onFiltersChange(TableFilters.fromFilters(filters))}
+              pivotBy={groupServicesBy ? [groupServicesBy] : []}
+              defaultPageSize={STANDARD_TABLE_PAGE_SIZE}
+              pageSizeOptions={STANDARD_TABLE_PAGE_SIZE_OPTIONS}
+              showPagination={services.length > STANDARD_TABLE_PAGE_SIZE}
+              columns={this.getTableColumns(visibleColumns, filters, onFiltersChange, workerInfo)}
+            />
+          </ServerModeContext>
+        </CloneStatusContext>
+      </LoadQueueInfoContext>
     );
   }
 
-  private getWorkerActions(workerHost: string, disabled: boolean): BasicAction[] {
-    if (disabled) {
+  private readonly getTableColumns = memoize(
+    (
+      visibleColumns: LocalStorageBackedVisibility,
+      _filters: TableFilters,
+      _onFiltersChange: (filters: TableFilters) => void,
+      workerInfoLookup: Record<string, WorkerInfo>,
+    ): ConsoleTableColumn<ServiceResultRow>[] => {
+      const { capabilities } = this.props;
+
       return [
         {
+          Header: 'Service',
+          show: visibleColumns.shown('Service'),
+          accessor: 'service',
+          width: 300,
+          Cell: ({ value, original, aggregated }) => {
+            if (aggregated) return '';
+
+            const { service_type } = original;
+            const workerInfo = workerInfoLookup[value];
+
+            // Make clickable if SQL is available to show properties
+            if (!capabilities.hasSql()) return value;
+
+            return (
+              <TableClickableCell
+                tooltip="Show properties"
+                onClick={() =>
+                  this.setState({
+                    serviceTableActionDialogServer: value,
+                    serviceTableActionDialogActions: this.getServiceActions(
+                      value,
+                      service_type,
+                      workerInfo,
+                    ),
+                  })
+                }
+                hoverIcon={IconNames.PROPERTIES}
+              >
+                {value}
+              </TableClickableCell>
+            );
+          },
+          Aggregated: () => '',
+        },
+        {
+          Header: 'Type',
+          show: visibleColumns.shown('Type'),
+          Filter: suggestibleFilterInput([
+            'coordinator',
+            'overlord',
+            'router',
+            'broker',
+            'historical',
+            'indexer',
+            'middle_manager',
+            'peon',
+          ]),
+          accessor: 'service_type',
+          width: 150,
+          Cell: this.renderFilterableCell('service_type'),
+        },
+        {
+          Header: 'Tier',
+          show: visibleColumns.shown('Tier'),
+          id: 'tier',
+          width: 180,
+          accessor: row => {
+            if (row.tier) return row.tier;
+            return workerInfoLookup[row.service]?.worker?.category;
+          },
+          Cell: this.renderFilterableCell('tier'),
+        },
+        {
+          Header: 'Host',
+          show: visibleColumns.shown('Host'),
+          accessor: 'host',
+          width: 200,
+          Cell: this.renderFilterableCell('host'),
+          Aggregated: () => '',
+        },
+        {
+          Header: 'Port',
+          show: visibleColumns.shown('Port'),
+          id: 'port',
+          width: 100,
+          accessor: row => {
+            const ports: string[] = [];
+            if (row.plaintext_port !== -1) {
+              ports.push(`${row.plaintext_port} (plain)`);
+            }
+            if (row.tls_port !== -1) {
+              ports.push(`${row.tls_port} (TLS)`);
+            }
+            return ports.join(', ') || 'No port';
+          },
+          Cell: this.renderFilterableCell('port'),
+          Aggregated: () => '',
+        },
+        {
+          Header: 'Assigned size',
+          show: visibleColumns.shown('Assigned size'),
+          id: 'curr_size',
+          width: 100,
+          filterable: false,
+          accessor: 'curr_size',
+          className: 'padded',
+          Aggregated: ({ subRows }) => {
+            const originalRows = subRows.map(r => r._original);
+            if (!originalRows.some(r => r.service_type === 'historical')) return '';
+            const totalCurr = sum(originalRows, s => Number(s.curr_size));
+            return formatBytes(totalCurr);
+          },
+          Cell: ({ value, aggregated, original }) => {
+            if (aggregated || original.service_type !== 'historical') return '';
+            if (value === null) return '';
+            return formatBytes(value);
+          },
+        },
+        {
+          Header: 'Effective size',
+          show: visibleColumns.shown('Effective size'),
+          id: 'effective_size',
+          width: 100,
+          filterable: false,
+          accessor: 'effective_size',
+          className: 'padded',
+          Aggregated: ({ subRows }) => {
+            const originalRows = subRows.map(r => r._original);
+            if (!originalRows.some(r => r.service_type === 'historical')) return '';
+            const totalEffectiveSize = sum(originalRows, s => Number(s.effective_size));
+            return formatBytes(totalEffectiveSize);
+          },
+          Cell: ({ value, aggregated, original }) => {
+            if (aggregated || original.service_type !== 'historical') return '';
+            if (value === null) return '';
+            return (
+              <div data-tooltip={`Max size: ${formatBytes(original.max_size)}`}>
+                {formatBytes(value)}
+              </div>
+            );
+          },
+        },
+        {
+          Header: 'Usage',
+          show: visibleColumns.shown('Usage'),
+          id: 'usage',
+          width: 140,
+          filterable: false,
+          className: 'padded',
+          accessor: row => {
+            if (oneOf(row.service_type, 'middle_manager', 'indexer')) {
+              const workerInfo = workerInfoLookup[row.service];
+              if (!workerInfo) return 0;
+              return (
+                (Number(workerInfo.currCapacityUsed) || 0) / Number(workerInfo.worker?.capacity)
+              );
+            } else if (row.effective_size) {
+              return Number(row.curr_size) / Number(row.effective_size);
+            } else {
+              return null;
+            }
+          },
+          Aggregated: ({ subRows }) => {
+            const originalRows = subRows.map(r => r._original);
+
+            if (originalRows.some(r => r.service_type === 'historical')) {
+              const totalAssignedSize = sum(originalRows, s => Number(s.curr_size));
+              const totalEffectiveSize = sum(originalRows, s => Number(s.effective_size));
+              const totalMaxSize = sum(originalRows, s => Number(s.max_size));
+              // if max_size is greater than effective_size (which is indicative of vsf mode), and assigned size is
+              // greater than effective_size (meaning the node is assigned more segments than it has capacity for),
+              // switch the bar value to show how much capacity is exceeded instead of the normal amount remaining to
+              // fill capacity
+              const isVsfOverCapacity =
+                totalMaxSize > totalEffectiveSize && totalAssignedSize > totalEffectiveSize;
+              const label = totalAssignedSize / totalEffectiveSize;
+              const usage = isVsfOverCapacity ? totalEffectiveSize / totalAssignedSize : label;
+              return <FillIndicator barValue={usage} labelValue={label} />;
+            } else if (
+              originalRows.some(
+                r => r.service_type === 'indexer' || r.service_type === 'middle_manager',
+              )
+            ) {
+              const workerInfos: WorkerInfo[] = filterMap(
+                originalRows,
+                r => workerInfoLookup[r.service],
+              );
+
+              if (!workerInfos.length) return '';
+
+              const totalCurrCapacityUsed = sum(workerInfos, w => Number(w.currCapacityUsed) || 0);
+              const totalWorkerCapacity = sum(workerInfos, s => deepGet(s, 'worker.capacity') || 0);
+              return `Slots used: ${totalCurrCapacityUsed} of ${totalWorkerCapacity}`;
+            } else {
+              return '';
+            }
+          },
+          Cell: ({ aggregated, original }) => {
+            if (aggregated) return '';
+            const { service_type, curr_size, max_size, effective_size } = original;
+
+            switch (service_type) {
+              case 'historical': {
+                // if max_size is greater than effective_size (which is indicative of vsf mode), and assigned size is
+                // greater than effective_size (meaning the node is assigned more segments than it has capacity for),
+                // switch the bar value to show how much capacity is exceeded instead of the normal amount remaining to
+                // fill capacity
+                const isVsfOverCapacity = effective_size < max_size && curr_size > effective_size;
+                const labelValue = Number(curr_size) / Number(effective_size);
+                return (
+                  <FillIndicator
+                    labelValue={labelValue}
+                    barValue={
+                      isVsfOverCapacity ? Number(effective_size) / Number(curr_size) : labelValue
+                    }
+                  />
+                );
+              }
+
+              case 'indexer':
+              case 'middle_manager': {
+                const workerInfo = workerInfoLookup[original.service];
+                if (!workerInfo) return '';
+
+                const currCapacityUsed = workerInfo.currCapacityUsed || 0;
+                const capacity = deepGet(workerInfo, 'worker.capacity');
+                if (typeof capacity === 'number') {
+                  return `Slots used: ${currCapacityUsed} of ${capacity}`;
+                } else {
+                  return 'Slots used: -';
+                }
+              }
+
+              default:
+                return '';
+            }
+          },
+        },
+        {
+          Header: 'Start time',
+          show: visibleColumns.shown('Start time'),
+          accessor: 'start_time',
+          id: 'start_time',
+          width: 220,
+          Cell: this.renderFilterableCell('start_time', formatDate),
+          Aggregated: () => '',
+          filterMethod: (filter: ColumnFilter, row: ServiceResultRow) => {
+            const tableFilter = TableFilter.fromFilter(filter);
+            const parsedRowTime = formatDate(row.start_time);
+            if (tableFilter.mode === '~') {
+              return tableFilter.matches(parsedRowTime);
+            }
+            const parsedFilterTime = formatDate(tableFilter.value);
+            const updatedFilter = new TableFilter(
+              tableFilter.key,
+              tableFilter.mode,
+              parsedFilterTime,
+            );
+            return updatedFilter.matches(parsedRowTime);
+          },
+        },
+        {
+          Header: 'Version',
+          show: visibleColumns.shown('Version'),
+          accessor: 'version',
+          width: 200,
+          Cell: this.renderFilterableCell('version'),
+          Aggregated: () => '',
+        },
+        {
+          Header: twoLines('Build', 'revision'),
+          show: visibleColumns.shown('Build revision'),
+          accessor: 'build_revision',
+          width: 200,
+          Cell: this.renderFilterableCell('build_revision'),
+          Aggregated: () => '',
+        },
+        {
+          Header: twoLines('Available', 'processors'),
+          show: visibleColumns.shown('Available processors'),
+          accessor: 'available_processors',
+          className: 'padded',
+          filterable: false,
+          width: 100,
+          Cell: ({ value }) => (value === null ? '' : formatInteger(value)),
+          Aggregated: ({ subRows }) => {
+            const originalRows: ServiceResultRow[] = subRows.map(r => r._original);
+            const totalAvailableProcessors = sum(originalRows, s => Number(s.available_processors));
+            return totalAvailableProcessors;
+          },
+        },
+        {
+          Header: 'Total memory',
+          show: visibleColumns.shown('Total memory'),
+          accessor: 'total_memory',
+          className: 'padded',
+          width: 120,
+          filterable: false,
+          Cell: ({ value }) => {
+            if (value === null) return '';
+            return formatBytes(value, true);
+          },
+          Aggregated: ({ subRows }) => {
+            const originalRows: ServiceResultRow[] = subRows.map(r => r._original);
+            const totalMemory = sum(originalRows, s => Number(s.total_memory));
+            return formatBytes(totalMemory, true);
+          },
+        },
+        {
+          Header: 'Labels',
+          show: visibleColumns.shown('Labels'),
+          accessor: 'labels',
+          className: 'padded',
+          filterable: false,
+          width: 200,
+          Cell: ({ value }: { value: string | null }) => {
+            if (!value) return '';
+            return (
+              <ul className="labels-list">
+                {Object.entries(JSON.parse(value)).map(([key, val]) => {
+                  return (
+                    <li key={key}>
+                      {key}: {String(val)}
+                    </li>
+                  );
+                })}
+              </ul>
+            );
+          },
+          Aggregated: () => '',
+        },
+        {
+          Header: 'Detail',
+          show: visibleColumns.shown('Detail'),
+          id: 'queue',
+          width: 400,
+          filterable: false,
+          className: 'padded wrapped',
+          accessor: 'service',
+          Cell: ({ original }) => (
+            <DetailCell original={original} workerInfoLookup={workerInfoLookup} />
+          ),
+          Aggregated: ({ subRows }) => <AggregatedDetailCell subRows={subRows} />,
+        },
+        {
+          Header: ACTION_COLUMN_LABEL,
+          show: capabilities.hasSql(),
+          id: ACTION_COLUMN_ID,
+          width: ACTION_COLUMN_WIDTH,
+          accessor: 'service',
+          filterable: false,
+          sortable: false,
+          Cell: ({ value, original, aggregated }) => {
+            if (aggregated) return '';
+
+            const { service_type } = original;
+            const workerInfo = workerInfoLookup[value];
+
+            // Get all applicable actions (worker actions + properties action)
+            const serviceActions = this.getServiceActions(value, service_type, workerInfo, true);
+            if (serviceActions.length === 0) return null;
+
+            const menuTitle = workerInfo ? workerInfo.worker.host : value;
+            return <ActionCell actions={serviceActions} menuTitle={menuTitle} />;
+          },
+          Aggregated: () => '',
+        },
+      ];
+    },
+  );
+
+  private getServiceActions(
+    server: string,
+    serviceType: string,
+    workerInfo?: WorkerInfo,
+    fromTable?: boolean,
+  ): BasicAction[] {
+    const actions: BasicAction[] = [];
+
+    if (workerInfo) {
+      const { worker } = workerInfo;
+      const disabled = worker.disabled || worker.version === '';
+
+      if (disabled) {
+        actions.push({
           icon: IconNames.TICK,
           title: 'Enable',
-          onAction: () => this.setState({ middleManagerEnableWorkerHost: workerHost }),
-        },
-      ];
-    } else {
-      return [
-        {
+          onAction: () => this.setState({ middleManagerEnableWorkerHost: worker.host }),
+        });
+      } else {
+        actions.push({
           icon: IconNames.DISABLE,
           title: 'Disable',
-          onAction: () => this.setState({ middleManagerDisableWorkerHost: workerHost }),
-        },
-      ];
+          onAction: () => this.setState({ middleManagerDisableWorkerHost: worker.host }),
+        });
+      }
     }
+
+    // Add properties action when called from table
+    if (fromTable) {
+      actions.push({
+        icon: IconNames.PROPERTIES,
+        title: 'View properties',
+        onAction: () => {
+          this.setState({
+            serviceTableActionDialogServer: server,
+            serviceTableActionDialogActions: this.getServiceActions(
+              server,
+              serviceType,
+              workerInfo,
+            ),
+          });
+        },
+      });
+    }
+
+    return actions;
   }
 
   renderDisableWorkerAction() {
@@ -630,8 +1133,16 @@ ORDER BY
           return resp.data;
         }}
         confirmButtonText="Disable worker"
-        successText="Worker has been disabled"
-        failText="Could not disable worker"
+        successText={
+          <>
+            Worker <Tag minimal>{middleManagerDisableWorkerHost}</Tag> has been disabled
+          </>
+        }
+        failText={
+          <>
+            Could not disable worker <Tag minimal>{middleManagerDisableWorkerHost}</Tag>
+          </>
+        }
         intent={Intent.DANGER}
         onClose={() => {
           this.setState({ middleManagerDisableWorkerHost: undefined });
@@ -681,7 +1192,7 @@ ORDER BY
       <MoreButton>
         {capabilities.hasSql() && (
           <MenuItem
-            icon={IconNames.APPLICATION}
+            icon={getConsoleViewIcon('workbench')}
             text="View SQL query for table"
             onClick={() => goToQuery({ queryString: ServicesView.SERVICE_SQL })}
           />
@@ -690,7 +1201,7 @@ ORDER BY
     );
   }
 
-  render(): JSX.Element {
+  render() {
     const { capabilities } = this.props;
     const { groupServicesBy, visibleColumns } = this.state;
 
@@ -720,26 +1231,41 @@ ORDER BY
           </ButtonGroup>
           <RefreshButton
             onRefresh={auto => {
-              if (auto && hasPopoverOpen()) return;
+              if (auto && hasOverlayOpen()) return;
               this.serviceQueryManager.rerunLastQuery(auto);
             }}
             localStorageKey={LocalStorageKeys.SERVICES_REFRESH_RATE}
           />
           {this.renderBulkServicesActions()}
           <TableColumnSelector
-            columns={tableColumns[capabilities.getMode()]}
+            columns={TABLE_COLUMNS_BY_MODE[capabilities.getMode()]}
             onChange={column =>
               this.setState(prevState => ({
                 visibleColumns: prevState.visibleColumns.toggle(column),
               }))
             }
+            onClose={this.fetchData}
             tableColumnsHidden={visibleColumns.getHiddenColumns()}
           />
         </ViewControlBar>
         {this.renderServicesTable()}
         {this.renderDisableWorkerAction()}
         {this.renderEnableWorkerAction()}
+        {this.renderServiceTableActionDialog()}
       </div>
+    );
+  }
+
+  renderServiceTableActionDialog() {
+    const { serviceTableActionDialogServer, serviceTableActionDialogActions } = this.state;
+    if (!serviceTableActionDialogServer) return;
+
+    return (
+      <ServiceTableActionDialog
+        service={serviceTableActionDialogServer}
+        actions={serviceTableActionDialogActions}
+        onClose={() => this.setState({ serviceTableActionDialogServer: undefined })}
+      />
     );
   }
 }

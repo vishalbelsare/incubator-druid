@@ -19,192 +19,402 @@
 
 package org.apache.druid.segment.nested;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
 import com.google.common.base.Supplier;
+import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
+import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import org.apache.druid.collections.bitmap.ImmutableBitmap;
-import org.apache.druid.java.util.common.ISE;
+import org.apache.druid.error.DruidException;
 import org.apache.druid.java.util.common.RE;
-import org.apache.druid.java.util.common.io.smoosh.SmooshedFileMapper;
-import org.apache.druid.segment.IndexMerger;
+import org.apache.druid.java.util.common.StringUtils;
+import org.apache.druid.query.monomorphicprocessing.RuntimeShapeInspector;
 import org.apache.druid.segment.column.ColumnBuilder;
 import org.apache.druid.segment.column.ColumnConfig;
+import org.apache.druid.segment.column.ColumnIndexSupplier;
 import org.apache.druid.segment.column.ColumnType;
-import org.apache.druid.segment.column.ComplexColumn;
-import org.apache.druid.segment.column.StringEncodingStrategy;
-import org.apache.druid.segment.column.TypeStrategy;
+import org.apache.druid.segment.column.StringEncodingStrategies;
 import org.apache.druid.segment.data.CompressedVariableSizedBlobColumnSupplier;
-import org.apache.druid.segment.data.EncodedStringDictionaryWriter;
 import org.apache.druid.segment.data.FixedIndexed;
-import org.apache.druid.segment.data.FrontCodedIndexed;
-import org.apache.druid.segment.data.GenericIndexed;
+import org.apache.druid.segment.data.FrontCodedIntArrayIndexed;
+import org.apache.druid.segment.data.Indexed;
+import org.apache.druid.segment.data.VByte;
+import org.apache.druid.segment.file.SegmentFileMapper;
+import org.apache.druid.segment.index.SimpleImmutableBitmapIndex;
+import org.apache.druid.segment.index.semantic.NullValueIndex;
+import org.apache.druid.segment.serde.ColumnSerializerUtils;
+import org.apache.druid.segment.serde.NestedCommonFormatColumnPartSerde;
 
+import javax.annotation.Nonnull;
+import javax.annotation.Nullable;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.util.Iterator;
+import java.util.List;
 
-public class NestedDataColumnSupplier implements Supplier<ComplexColumn>
+public class NestedDataColumnSupplier implements Supplier<NestedCommonFormatColumn>, ColumnIndexSupplier
 {
-  private final NestedDataColumnMetadata metadata;
-  private final CompressedVariableSizedBlobColumnSupplier compressedRawColumnSupplier;
-  private final ImmutableBitmap nullValues;
-  private final GenericIndexed<String> fields;
-  private final NestedLiteralTypeInfo fieldInfo;
-  private final GenericIndexed<ByteBuffer> dictionary;
-  private final Supplier<FrontCodedIndexed> frontCodedDictionarySupplier;
-  private final Supplier<FixedIndexed<Long>> longDictionarySupplier;
-  private final Supplier<FixedIndexed<Double>> doubleDictionarySupplier;
-  private final ColumnConfig columnConfig;
-  private final SmooshedFileMapper fileMapper;
-
-  public NestedDataColumnSupplier(
+  public static NestedDataColumnSupplier read(
+      ColumnType logicalType,
+      boolean hasNulls,
+      byte pathParserVersion,
       ByteBuffer bb,
       ColumnBuilder columnBuilder,
       ColumnConfig columnConfig,
-      ObjectMapper jsonMapper
+      NestedCommonFormatColumnFormatSpec formatSpec,
+      ByteOrder byteOrder,
+      NestedDataColumnSupplier parent
   )
   {
-    this(bb, columnBuilder, columnConfig, jsonMapper, ColumnType.LONG.getStrategy(), ColumnType.DOUBLE.getStrategy());
-  }
+    final byte version = bb.get();
+    final int columnNameLength = VByte.readInt(bb);
+    final String columnName = StringUtils.fromUtf8(bb, columnNameLength);
 
-  // strictly for testing?
-  @VisibleForTesting
-  public NestedDataColumnSupplier(
-      ByteBuffer bb,
-      ColumnBuilder columnBuilder,
-      ColumnConfig columnConfig,
-      ObjectMapper jsonMapper,
-      TypeStrategy<Long> longTypeStrategy,
-      TypeStrategy<Double> doubleTypeStrategy
-  )
-  {
-    byte version = bb.get();
-
-    if (version == 0x03) {
+    if (version == NestedCommonFormatColumnSerializer.V0) {
       try {
-        final SmooshedFileMapper mapper = columnBuilder.getFileMapper();
-        metadata = jsonMapper.readValue(
-            IndexMerger.SERIALIZER_UTILS.readString(bb),
-            NestedDataColumnMetadata.class
-        );
-        fields = GenericIndexed.read(bb, GenericIndexed.STRING_STRATEGY, mapper);
-        fieldInfo = NestedLiteralTypeInfo.read(bb, fields.size());
+        final SegmentFileMapper mapper = columnBuilder.getFileMapper();
+        final Supplier<? extends Indexed<ByteBuffer>> fieldsSupplier;
+        final FieldTypeInfo fieldInfo;
+        final CompressedVariableSizedBlobColumnSupplier compressedRawColumnSupplier;
+        final ImmutableBitmap nullValues;
+        final Supplier<? extends Indexed<ByteBuffer>> stringDictionarySupplier;
+        final Supplier<FixedIndexed<Long>> longDictionarySupplier;
+        final Supplier<FixedIndexed<Double>> doubleDictionarySupplier;
+        final Supplier<FrontCodedIntArrayIndexed> arrayDictionarySupplier;
 
-        final ByteBuffer stringDictionaryBuffer = loadInternalFile(
-            mapper,
-            NestedDataColumnSerializer.STRING_DICTIONARY_FILE_NAME
-        );
 
-        final int dictionaryStartPosition = stringDictionaryBuffer.position();
-        final byte dictionaryVersion = stringDictionaryBuffer.get();
-
-        if (dictionaryVersion == EncodedStringDictionaryWriter.VERSION) {
-          final byte encodingId = stringDictionaryBuffer.get();
-          if (encodingId == StringEncodingStrategy.FRONT_CODED_ID) {
-            frontCodedDictionarySupplier = FrontCodedIndexed.read(stringDictionaryBuffer, metadata.getByteOrder());
-            dictionary = null;
-          } else if (encodingId == StringEncodingStrategy.UTF8_ID) {
-            // this cannot happen naturally right now since generic indexed is written in the 'legacy' format, but
-            // this provides backwards compatibility should we switch at some point in the future to always
-            // writing dictionaryVersion
-            dictionary = GenericIndexed.read(stringDictionaryBuffer, GenericIndexed.UTF8_STRATEGY, mapper);
-            frontCodedDictionarySupplier = null;
+        if (parent != null) {
+          fieldsSupplier = parent.fieldSupplier;
+          fieldInfo = parent.fieldInfo;
+          stringDictionarySupplier = parent.stringDictionarySupplier;
+          longDictionarySupplier = parent.longDictionarySupplier;
+          doubleDictionarySupplier = parent.doubleDictionarySupplier;
+          arrayDictionarySupplier = parent.arrayDictionarySupplier;
+        } else {
+          if (pathParserVersion == 0x00) {
+            fieldsSupplier = getAndFixFieldsSupplier(bb, byteOrder, mapper);
           } else {
-            throw new ISE("impossible, unknown encoding strategy id: %s", encodingId);
+            fieldsSupplier = StringEncodingStrategies.getStringDictionarySupplier(mapper, bb, byteOrder);
           }
-        } else {
-          // legacy format that only supports plain utf8 enoding stored in GenericIndexed and the byte we are reading
-          // as dictionaryVersion is actually also the GenericIndexed version, so we reset start position so the
-          // GenericIndexed version can be correctly read
-          stringDictionaryBuffer.position(dictionaryStartPosition);
-          dictionary = GenericIndexed.read(stringDictionaryBuffer, GenericIndexed.UTF8_STRATEGY, mapper);
-          frontCodedDictionarySupplier = null;
+          fieldInfo = FieldTypeInfo.read(bb, fieldsSupplier.get().size());
+          final ByteBuffer stringDictionaryBuffer = NestedCommonFormatColumnPartSerde.loadInternalFile(
+              mapper,
+              columnName,
+              ColumnSerializerUtils.STRING_DICTIONARY_FILE_NAME
+          );
+          final ByteBuffer longDictionaryBuffer = NestedCommonFormatColumnPartSerde.loadInternalFile(
+              mapper,
+              columnName,
+              ColumnSerializerUtils.LONG_DICTIONARY_FILE_NAME
+          );
+          final ByteBuffer doubleDictionaryBuffer = NestedCommonFormatColumnPartSerde.loadInternalFile(
+              mapper,
+              columnName,
+              ColumnSerializerUtils.DOUBLE_DICTIONARY_FILE_NAME
+          );
+          final ByteBuffer arrayDictionarybuffer = NestedCommonFormatColumnPartSerde.loadInternalFile(
+              mapper,
+              columnName,
+              ColumnSerializerUtils.ARRAY_DICTIONARY_FILE_NAME
+          );
+
+          stringDictionarySupplier = StringEncodingStrategies.getStringDictionarySupplier(
+              mapper,
+              stringDictionaryBuffer,
+              byteOrder
+          );
+          longDictionarySupplier = FixedIndexed.read(
+              longDictionaryBuffer,
+              ColumnType.LONG.getStrategy(),
+              byteOrder,
+              Long.BYTES
+          );
+          doubleDictionarySupplier = FixedIndexed.read(
+              doubleDictionaryBuffer,
+              ColumnType.DOUBLE.getStrategy(),
+              byteOrder,
+              Double.BYTES
+          );
+          arrayDictionarySupplier = FrontCodedIntArrayIndexed.read(
+              arrayDictionarybuffer,
+              byteOrder
+          );
         }
-        final ByteBuffer longDictionaryBuffer = loadInternalFile(
+
+        final ByteBuffer rawBuffer = NestedCommonFormatColumnPartSerde.loadInternalFile(
             mapper,
-            NestedDataColumnSerializer.LONG_DICTIONARY_FILE_NAME
+            columnName,
+            NestedCommonFormatColumnSerializer.RAW_FILE_NAME
         );
-        longDictionarySupplier = FixedIndexed.read(
-            longDictionaryBuffer,
-            longTypeStrategy,
-            metadata.getByteOrder(),
-            Long.BYTES
-        );
-        final ByteBuffer doubleDictionaryBuffer = loadInternalFile(
-            mapper,
-            NestedDataColumnSerializer.DOUBLE_DICTIONARY_FILE_NAME
-        );
-        doubleDictionarySupplier = FixedIndexed.read(
-            doubleDictionaryBuffer,
-            doubleTypeStrategy,
-            metadata.getByteOrder(),
-            Double.BYTES
-        );
-        final ByteBuffer rawBuffer = loadInternalFile(mapper, NestedDataColumnSerializer.RAW_FILE_NAME);
-        compressedRawColumnSupplier = CompressedVariableSizedBlobColumnSupplier.fromByteBuffer(
-            NestedDataColumnSerializer.getInternalFileName(
-                metadata.getFileNameBase(), NestedDataColumnSerializer.RAW_FILE_NAME
-            ),
-            rawBuffer,
-            metadata.getByteOrder(),
-            mapper
-        );
-        if (metadata.hasNulls()) {
-          final ByteBuffer nullIndexBuffer = loadInternalFile(mapper, NestedDataColumnSerializer.NULL_BITMAP_FILE_NAME);
-          nullValues = metadata.getBitmapSerdeFactory().getObjectStrategy().fromByteBufferWithSize(nullIndexBuffer);
+        compressedRawColumnSupplier = rawBuffer == null
+                                      ? null
+                                      : CompressedVariableSizedBlobColumnSupplier.fromByteBuffer(
+                                          ColumnSerializerUtils.getInternalFileName(
+                                              columnName,
+                                              NestedCommonFormatColumnSerializer.RAW_FILE_NAME
+                                          ),
+                                          rawBuffer,
+                                          byteOrder,
+                                          byteOrder, // byte order doesn't matter since serde is byte blobs
+                                          mapper
+                                      );
+        if (hasNulls) {
+          columnBuilder.setHasNulls(true);
+          final ByteBuffer nullIndexBuffer = NestedCommonFormatColumnPartSerde.loadInternalFile(
+              mapper,
+              columnName,
+              ColumnSerializerUtils.NULL_BITMAP_FILE_NAME
+          );
+          nullValues = formatSpec.getBitmapEncoding().getObjectStrategy().fromByteBufferWithSize(nullIndexBuffer);
         } else {
-          nullValues = metadata.getBitmapSerdeFactory().getBitmapFactory().makeEmptyImmutableBitmap();
+          nullValues = formatSpec.getBitmapEncoding().getBitmapFactory().makeEmptyImmutableBitmap();
         }
+
+        return new NestedDataColumnSupplier(
+            columnName,
+            fieldsSupplier,
+            fieldInfo,
+            compressedRawColumnSupplier,
+            nullValues,
+            stringDictionarySupplier,
+            longDictionarySupplier,
+            doubleDictionarySupplier,
+            arrayDictionarySupplier,
+            columnConfig,
+            mapper,
+            formatSpec,
+            byteOrder,
+            logicalType
+        );
       }
       catch (IOException ex) {
-        throw new RE(ex, "Failed to deserialize V3 column.");
+        throw new RE(ex, "Failed to deserialize V%s column.", version);
       }
     } else {
-      throw new RE("Unknown version" + version);
+      throw new RE("Unknown version " + version);
     }
+  }
 
-    fileMapper = Preconditions.checkNotNull(columnBuilder.getFileMapper(), "Null fileMapper");
 
+  /**
+   * Detects if field dictionary contains any invalid entries from a bug which previously existed in
+   * {@link NestedPathFinder#toNormalizedJsonPath(List)} to generate invalid path expressions when faced with empty
+   * field names - for example {"":{"a":1}} would incorrectly store the path as $..a instead of $[''].a.
+   * <p>
+   * If this method detects any illegal paths, the field dictionary is wrapped using {@link FieldsFixupIndexed}, which
+   * replaces the invalid values with corrected values, using {@link NestedPathFinder#parseBadJsonPath(String)} and
+   * feeding that back into the now fixed {@link NestedPathFinder#toNormalizedJsonPath(List)}.
+   * <p>
+   * Columns written after the bug was fixed will store {@link NestedCommonFormatColumnPartSerde#pathParserVersion} as
+   * 0x01 or greater, to indicate that we do not need to call this method to check for fixing up paths.
+   * <p>
+   * see https://github.com/apache/druid/pull/19072 for additional details.
+   */
+  @VisibleForTesting
+  static Supplier<? extends Indexed<ByteBuffer>> getAndFixFieldsSupplier(
+      ByteBuffer bb,
+      ByteOrder byteOrder,
+      SegmentFileMapper mapper
+  )
+  {
+    final Supplier<? extends Indexed<ByteBuffer>> fieldsSupplier;
+    Supplier<? extends Indexed<ByteBuffer>> _fieldsSupplier =
+        StringEncodingStrategies.getStringDictionarySupplier(mapper, bb, byteOrder);
+    // check for existence of bug to detect if we need a fixup adapter or not
+    Indexed<ByteBuffer> fields = _fieldsSupplier.get();
+    Int2ObjectMap<ByteBuffer> fixupMap = new Int2ObjectOpenHashMap<>();
+    for (int i = 0; i < fields.size(); i++) {
+      String path = StringUtils.fromUtf8Nullable(fields.get(i));
+      try {
+        NestedPathFinder.parseJsonPath(path);
+      }
+      catch (DruidException d) {
+        String fixed = NestedPathFinder.toNormalizedJsonPath(NestedPathFinder.parseBadJsonPath(path));
+        fixupMap.put(i, StringUtils.toUtf8ByteBuffer(fixed));
+      }
+    }
+    if (fixupMap.isEmpty()) {
+      fieldsSupplier = _fieldsSupplier;
+    } else {
+      fieldsSupplier = () -> new FieldsFixupIndexed(_fieldsSupplier.get(), fixupMap);
+    }
+    return fieldsSupplier;
+  }
+
+  private final String columnName;
+  private final Supplier<? extends Indexed<ByteBuffer>> fieldSupplier;
+  private final FieldTypeInfo fieldInfo;
+  @Nullable
+  private final CompressedVariableSizedBlobColumnSupplier compressedRawColumnSupplier;
+  private final ImmutableBitmap nullValues;
+  private final Supplier<? extends Indexed<ByteBuffer>> stringDictionarySupplier;
+  private final Supplier<FixedIndexed<Long>> longDictionarySupplier;
+  private final Supplier<FixedIndexed<Double>> doubleDictionarySupplier;
+  private final Supplier<FrontCodedIntArrayIndexed> arrayDictionarySupplier;
+  private final ColumnConfig columnConfig;
+  private final SegmentFileMapper fileMapper;
+  private final NestedCommonFormatColumnFormatSpec formatSpec;
+  private final ByteOrder byteOrder;
+
+  @Nullable
+  private final ColumnType simpleType;
+
+  private NestedDataColumnSupplier(
+      String columnName,
+      Supplier<? extends Indexed<ByteBuffer>> fieldSupplier,
+      FieldTypeInfo fieldInfo,
+      @Nullable CompressedVariableSizedBlobColumnSupplier compressedRawColumnSupplier,
+      ImmutableBitmap nullValues,
+      Supplier<? extends Indexed<ByteBuffer>> stringDictionarySupplier,
+      Supplier<FixedIndexed<Long>> longDictionarySupplier,
+      Supplier<FixedIndexed<Double>> doubleDictionarySupplier,
+      Supplier<FrontCodedIntArrayIndexed> arrayDictionarySupplier,
+      ColumnConfig columnConfig,
+      SegmentFileMapper fileMapper,
+      NestedCommonFormatColumnFormatSpec formatSpec,
+      ByteOrder byteOrder,
+      @Nullable ColumnType simpleType
+  )
+  {
+    this.columnName = columnName;
+    this.fieldSupplier = fieldSupplier;
+    this.fieldInfo = fieldInfo;
+    this.compressedRawColumnSupplier = compressedRawColumnSupplier;
+    this.nullValues = nullValues;
+    this.stringDictionarySupplier = stringDictionarySupplier;
+    this.longDictionarySupplier = longDictionarySupplier;
+    this.doubleDictionarySupplier = doubleDictionarySupplier;
+    this.arrayDictionarySupplier = arrayDictionarySupplier;
     this.columnConfig = columnConfig;
+    this.fileMapper = fileMapper;
+    this.formatSpec = formatSpec;
+    this.byteOrder = byteOrder;
+    this.simpleType = simpleType;
   }
 
   @Override
-  public ComplexColumn get()
+  public NestedCommonFormatColumn get()
   {
-    if (frontCodedDictionarySupplier != null) {
-      return new CompressedNestedDataComplexColumn<>(
-          metadata,
-          columnConfig,
-          compressedRawColumnSupplier,
-          nullValues,
-          fields,
-          fieldInfo,
-          frontCodedDictionarySupplier,
-          longDictionarySupplier,
-          doubleDictionarySupplier,
-          fileMapper
-      );
-    }
-    return new CompressedNestedDataComplexColumn<>(
-        metadata,
+    return new NestedDataColumnV5<>(
+        columnName,
+        getLogicalType(),
         columnConfig,
         compressedRawColumnSupplier,
         nullValues,
-        fields,
+        fieldSupplier,
         fieldInfo,
-        dictionary::singleThreaded,
+        stringDictionarySupplier,
         longDictionarySupplier,
         doubleDictionarySupplier,
-        fileMapper
+        arrayDictionarySupplier,
+        fileMapper,
+        formatSpec,
+        byteOrder
     );
   }
 
-  private ByteBuffer loadInternalFile(SmooshedFileMapper fileMapper, String internalFileName) throws IOException
+  public ColumnType getLogicalType()
   {
-    return fileMapper.mapFile(
-        NestedDataColumnSerializer.getInternalFileName(
-            metadata.getFileNameBase(), internalFileName
-        )
-    );
+    return simpleType == null ? ColumnType.NESTED_DATA : simpleType;
+  }
+
+  @Nullable
+  @Override
+  public <T> T as(Class<T> clazz)
+  {
+    if (clazz.equals(NullValueIndex.class)) {
+      return (T) (NullValueIndex) () -> new SimpleImmutableBitmapIndex(nullValues);
+    }
+    return null;
+  }
+
+  /**
+   * {@link Indexed} implementation which contains a map of positions to replace with corrected values by
+   * {@link #getAndFixFieldsSupplier(ByteBuffer, ByteOrder, SegmentFileMapper)}.
+   * <p>
+   * This implementation is no longer {@link #isSorted()}, despite the underlying {@link Indexed} being so, as the
+   * replaced values might violate the old sort order, so this cannot provide that guarantee. Despite this,
+   * {@link #indexOf(ByteBuffer)} will still function for finding if items exist in the dictionary, the replaced values
+   * are searched prior to calling {@link #indexOf(ByteBuffer)} on the underlying dictionary, so for the values we are
+   * trying to find will always report their correct positions.
+   * It is important that the fixed dictionary retains its original order because the positions are used as the internal
+   * field file names (instead of the paths themselves) in the segment file. Callers however should not expect
+   * iterating the dictionary to provide values in sorted order.
+   */
+  @VisibleForTesting
+  public static class FieldsFixupIndexed implements Indexed<ByteBuffer>
+  {
+    private final Indexed<ByteBuffer> delegate;
+    private final Int2ObjectMap<ByteBuffer> fixup;
+
+    private FieldsFixupIndexed(Indexed<ByteBuffer> delegate, Int2ObjectMap<ByteBuffer> fixup)
+    {
+      this.delegate = delegate;
+      this.fixup = fixup;
+    }
+
+    @Override
+    public int size()
+    {
+      return delegate.size();
+    }
+
+    @Nullable
+    @Override
+    public ByteBuffer get(int index)
+    {
+      if (fixup.containsKey(index)) {
+        return fixup.get(index).asReadOnlyBuffer();
+      }
+      return delegate.get(index);
+    }
+
+    @Override
+    public int indexOf(@Nullable ByteBuffer value)
+    {
+      for (Int2ObjectMap.Entry<ByteBuffer> entry : fixup.int2ObjectEntrySet()) {
+        if (entry.getValue().equals(value)) {
+          return entry.getIntKey();
+        }
+      }
+      return delegate.indexOf(value);
+    }
+
+    @Nonnull
+    @Override
+    public Iterator<ByteBuffer> iterator()
+    {
+      return new Iterator<>()
+      {
+        int pos = 0;
+        final int size = delegate.size();
+        final Iterator<ByteBuffer> delegateIterator = delegate.iterator();
+
+        @Override
+        public boolean hasNext()
+        {
+          return pos < size;
+        }
+
+        @Override
+        public ByteBuffer next()
+        {
+          if (fixup.containsKey(pos)) {
+            // move delegate iterator forward, but we're going to return our own value
+            delegateIterator.next();
+            // this is sad, but downstream stuff wants ByteBuffer, and is less sad than the original bug
+            return fixup.get(pos++).asReadOnlyBuffer();
+          }
+          pos++;
+          return delegateIterator.next();
+        }
+      };
+    }
+
+    @Override
+    public void inspectRuntimeShape(RuntimeShapeInspector inspector)
+    {
+
+    }
   }
 }

@@ -24,6 +24,9 @@ public class VirtualColumnCacheHelper
   public static final byte CACHE_TYPE_ID_MAP = 0x00;
   public static final byte CACHE_TYPE_ID_EXPRESSION = 0x01;
   public static final byte CACHE_TYPE_ID_LIST_FILTERED = 0x02;
+  public static final byte CACHE_TYPE_ID_LIST_FALLBACK = 0x03;
+  public static final byte CACHE_TYPE_ID_REGEX_FILTERED = 0x04;
+  public static final byte CACHE_TYPE_ID_PREFIX_FILTERED = 0x05;
 
   // Starting byte 0xFF is reserved for site-specific virtual columns.
   @SuppressWarnings("unused")

@@ -16,12 +16,11 @@
  * limitations under the License.
  */
 
-import { FormGroup, InputGroup, Intent, MenuItem, Switch } from '@blueprintjs/core';
+import { Button, FormGroup, InputGroup, Intent, MenuItem, Switch, Tag } from '@blueprintjs/core';
 import { IconNames } from '@blueprintjs/icons';
-import classNames from 'classnames';
+import { sum } from 'd3-array';
 import { SqlQuery, T } from 'druid-query-toolkit';
 import React from 'react';
-import ReactTable, { Filter } from 'react-table';
 
 import {
   ACTION_COLUMN_ID,
@@ -32,94 +31,120 @@ import {
   MoreButton,
   RefreshButton,
   SegmentTimeline,
+  SplitterLayout,
   TableClickableCell,
   TableColumnSelector,
+  type TableColumnSelectorColumn,
   ViewControlBar,
 } from '../../components';
-import { AsyncActionDialog, CompactionDialog, RetentionDialog } from '../../dialogs';
-import { DatasourceTableActionDialog } from '../../dialogs/datasource-table-action-dialog/datasource-table-action-dialog';
 import {
+  ConsoleTable,
+  STANDARD_TABLE_PAGE_SIZE,
+  STANDARD_TABLE_PAGE_SIZE_OPTIONS,
+} from '../../components';
+import {
+  AsyncActionDialog,
+  CompactionConfigDialog,
+  KillDatasourceDialog,
+  RetentionDialog,
+} from '../../dialogs';
+import { DatasourceTableActionDialog } from '../../dialogs/datasource-table-action-dialog/datasource-table-action-dialog';
+import type {
   CompactionConfig,
+  CompactionConfigs,
+  CompactionInfo,
   CompactionStatus,
-  formatCompactionConfigAndStatus,
+  ConsoleViewId,
   QueryWithContext,
+  Rule,
+} from '../../druid-models';
+import {
+  END_OF_TIME_DATE,
+  formatCompactionInfo,
+  getConsoleViewIcon,
+  getDatasourceColor,
+  RuleUtil,
+  START_OF_TIME_DATE,
   zeroCompactionStatus,
 } from '../../druid-models';
-import { STANDARD_TABLE_PAGE_SIZE, STANDARD_TABLE_PAGE_SIZE_OPTIONS } from '../../react-table';
+import type { Capabilities, CapabilitiesMode } from '../../helpers';
 import { Api, AppToaster } from '../../singletons';
+import type { AuxiliaryQueryFn, NumberLike } from '../../utils';
 import {
-  Capabilities,
-  CapabilitiesMode,
+  assemble,
   compact,
   countBy,
   deepGet,
+  findMap,
   formatBytes,
   formatInteger,
   formatMillions,
   formatPercent,
+  getApiArray,
   getDruidErrorMessage,
-  hasPopoverOpen,
+  groupByAsMap,
+  hasOverlayOpen,
+  isNumberLike,
   isNumberLikeNaN,
   LocalStorageBackedVisibility,
   LocalStorageKeys,
   lookupBy,
-  NumberLike,
+  moveToEnd,
   pluralIfNeeded,
   queryDruidSql,
   QueryManager,
   QueryState,
+  ResultWithAuxiliaryWork,
   twoLines,
 } from '../../utils';
-import { BasicAction } from '../../utils/basic-action';
-import { Rule, RuleUtil } from '../../utils/load-rule';
+import type { BasicAction } from '../../utils/basic-action';
+import { TableFilter, TableFilters } from '../../utils/table-filters';
 
 import './datasources-view.scss';
 
-const tableColumns: Record<CapabilitiesMode, string[]> = {
+const TABLE_COLUMNS_BY_MODE: Record<CapabilitiesMode, TableColumnSelectorColumn[]> = {
   'full': [
     'Datasource name',
     'Availability',
-    'Availability detail',
+    'Historical load/drop queues',
     'Total data size',
+    { text: 'Running tasks', label: 'sys.tasks' },
     'Segment rows',
     'Segment size',
-    'Segment granularity',
+    { text: 'Segment granularity', label: '𝑓(sys.segments)' },
     'Total rows',
     'Avg. row size',
     'Replicated size',
-    'Compaction',
-    '% Compacted',
-    'Left to be compacted',
-    'Retention',
-    ACTION_COLUMN_LABEL,
+    { text: 'Compaction', label: 'compaction API' },
+    { text: '% Compacted', label: 'compaction API' },
+    { text: 'Left to be compacted', label: 'compaction API' },
+    { text: 'Retention', label: 'rules API' },
   ],
   'no-sql': [
     'Datasource name',
     'Availability',
-    'Availability detail',
+    'Historical load/drop queues',
     'Total data size',
-    'Compaction',
-    '% Compacted',
-    'Left to be compacted',
-    'Retention',
-    ACTION_COLUMN_LABEL,
+    { text: 'Running tasks', label: 'tasks API' },
+    { text: 'Compaction', label: 'compaction API' },
+    { text: '% Compacted', label: 'compaction API' },
+    { text: 'Left to be compacted', label: 'compaction API' },
+    { text: 'Retention', label: 'rules API' },
   ],
   'no-proxy': [
     'Datasource name',
     'Availability',
-    'Availability detail',
+    'Historical load/drop queues',
     'Total data size',
+    { text: 'Running tasks', label: 'sys.tasks' },
     'Segment rows',
     'Segment size',
-    'Segment granularity',
+    { text: 'Segment granularity', label: '𝑓(sys.segments)' },
     'Total rows',
     'Avg. row size',
     'Replicated size',
-    ACTION_COLUMN_LABEL,
   ],
 };
-
-const DEFAULT_RULES_KEY = '_default';
 
 function formatLoadDrop(segmentsToLoad: NumberLike, segmentsToDrop: NumberLike): string {
   const loadDrop: string[] = [];
@@ -140,10 +165,11 @@ const formatAvgRowSize = formatInteger;
 const formatReplicatedSize = formatBytes;
 const formatLeftToBeCompacted = formatBytes;
 
-function progress(done: number, awaiting: number): number {
-  const d = done + awaiting;
-  if (!d) return 0;
-  return done / d;
+function progress(done: NumberLike, awaiting: NumberLike): number {
+  const doneNumber = Number(done);
+  const total = doneNumber + Number(awaiting);
+  if (!total) return 0;
+  return doneNumber / total;
 }
 
 const PERCENT_BRACES = [formatPercent(1)];
@@ -151,6 +177,7 @@ const PERCENT_BRACES = [formatPercent(1)];
 interface DatasourceQueryResultRow {
   readonly datasource: string;
   readonly num_segments: NumberLike;
+  readonly num_zero_replica_segments: NumberLike;
   readonly num_segments_to_load: NumberLike;
   readonly num_segments_to_drop: NumberLike;
   readonly minute_aligned_segments: NumberLike;
@@ -175,6 +202,7 @@ function makeEmptyDatasourceQueryResultRow(datasource: string): DatasourceQueryR
   return {
     datasource,
     num_segments: 0,
+    num_zero_replica_segments: 0,
     num_segments_to_load: 0,
     num_segments_to_drop: 0,
     minute_aligned_segments: 0,
@@ -208,9 +236,9 @@ function segmentGranularityCountsToRank(row: DatasourceQueryResultRow): number {
 }
 
 interface Datasource extends DatasourceQueryResultRow {
-  readonly rules: Rule[];
-  readonly compactionConfig?: CompactionConfig;
-  readonly compactionStatus?: CompactionStatus;
+  readonly runningTasks?: Record<string, number>;
+  readonly rules?: Rule[];
+  readonly compaction?: CompactionInfo;
   readonly unused?: boolean;
 }
 
@@ -220,36 +248,81 @@ function makeUnusedDatasource(datasource: string): Datasource {
 
 interface DatasourcesAndDefaultRules {
   readonly datasources: Datasource[];
-  readonly defaultRules: Rule[];
+  readonly defaultRules?: Rule[];
 }
 
 interface RetentionDialogOpenOn {
   readonly datasource: string;
   readonly rules: Rule[];
+  readonly defaultRules: Rule[];
 }
 
-interface CompactionDialogOpenOn {
+interface CompactionConfigDialogOpenOn {
   readonly datasource: string;
   readonly compactionConfig?: CompactionConfig;
 }
 
-export interface DatasourcesViewProps {
-  goToQuery(queryWithContext: QueryWithContext): void;
-  goToTask(datasource?: string, openDialog?: string): void;
-  goToSegments(datasource: string, onlyUnavailable?: boolean): void;
+interface DatasourceQuery {
   capabilities: Capabilities;
-  initDatasource?: string;
+  visibleColumns: LocalStorageBackedVisibility;
+  showUnused: boolean;
+}
+
+interface RunningTaskRow {
+  datasource: string;
+  type: string;
+  num_running_tasks: number;
+}
+
+function countRunningTasks(runningTasks: Record<string, number> | undefined): number {
+  if (!runningTasks) return -1;
+  return sum(Object.values(runningTasks));
+}
+
+function formatRunningTasks(runningTasks: Record<string, number>): string {
+  const runningTaskEntries = Object.entries(runningTasks);
+  if (!runningTaskEntries.length) return 'No running tasks';
+  return moveToEnd(
+    runningTaskEntries.sort(([t1, c1], [t2, c2]) => {
+      const dc = c2 - c1;
+      if (dc) return dc;
+      return t1.localeCompare(t2);
+    }),
+    ([t]) => t === 'other',
+  )
+    .map(kv => kv.join(': '))
+    .join(', ');
+}
+
+function normalizeTaskType(taskType: string): string {
+  switch (taskType) {
+    case 'index_parallel':
+    case 'index_hadoop':
+    case 'index_kafka':
+    case 'index_kinesis':
+    case 'compact':
+    case 'kill':
+      return taskType;
+
+    default:
+      return 'other';
+  }
+}
+
+export interface DatasourcesViewProps {
+  filters: TableFilters;
+  onFiltersChange(filters: TableFilters): void;
+  goToQuery(queryWithContext: QueryWithContext): void;
+  goToView(tab: ConsoleViewId, filters?: TableFilters): void;
+  capabilities: Capabilities;
 }
 
 export interface DatasourcesViewState {
-  datasourceFilter: Filter[];
   datasourcesAndDefaultRulesState: QueryState<DatasourcesAndDefaultRules>;
-
-  tiersState: QueryState<string[]>;
 
   showUnused: boolean;
   retentionDialogOpenOn?: RetentionDialogOpenOn;
-  compactionDialogOpenOn?: CompactionDialogOpenOn;
+  compactionDialogOpenOn?: CompactionConfigDialogOpenOn;
   datasourceToMarkAsUnusedAllSegmentsIn?: string;
   datasourceToMarkAllNonOvershadowedSegmentsAsUsedIn?: string;
   killDatasource?: string;
@@ -258,16 +331,10 @@ export interface DatasourcesViewState {
   useUnuseInterval: string;
   showForceCompact: boolean;
   visibleColumns: LocalStorageBackedVisibility;
-  showSegmentTimeline: boolean;
+  showSegmentTimeline?: { capabilities: Capabilities; datasource?: string };
 
   datasourceTableActionDialogId?: string;
   actions: BasicAction[];
-}
-
-interface DatasourceQuery {
-  capabilities: Capabilities;
-  visibleColumns: LocalStorageBackedVisibility;
-  showUnused: boolean;
 }
 
 export class DatasourcesView extends React.PureComponent<
@@ -283,38 +350,40 @@ export class DatasourcesView extends React.PureComponent<
     const columns = compact(
       [
         visibleColumns.shown('Datasource name') && `datasource`,
-        (visibleColumns.shown('Availability') || visibleColumns.shown('Segment granularity')) &&
-          `COUNT(*) FILTER (WHERE (is_published = 1 AND is_overshadowed = 0) OR is_realtime = 1) AS num_segments`,
-        (visibleColumns.shown('Availability') || visibleColumns.shown('Availability detail')) && [
-          `COUNT(*) FILTER (WHERE is_published = 1 AND is_overshadowed = 0 AND is_available = 0) AS num_segments_to_load`,
-          `COUNT(*) FILTER (WHERE is_available = 1 AND NOT ((is_published = 1 AND is_overshadowed = 0) OR is_realtime = 1)) AS num_segments_to_drop`,
+        visibleColumns.shown('Availability', 'Segment granularity') && [
+          `COUNT(*) FILTER (WHERE is_active = 1) AS num_segments`,
+          `COUNT(*) FILTER (WHERE is_published = 1 AND is_overshadowed = 0 AND replication_factor = 0) AS num_zero_replica_segments`,
+        ],
+        visibleColumns.shown('Availability', 'Historical load/drop queues') && [
+          `COUNT(*) FILTER (WHERE is_published = 1 AND is_overshadowed = 0 AND is_available = 0 AND replication_factor > 0) AS num_segments_to_load`,
+          `COUNT(*) FILTER (WHERE is_available = 1 AND is_active = 0) AS num_segments_to_drop`,
         ],
         visibleColumns.shown('Total data size') &&
-          `SUM("size") FILTER (WHERE is_published = 1 AND is_overshadowed = 0) AS total_data_size`,
+          `SUM("size") FILTER (WHERE is_active = 1) AS total_data_size`,
         visibleColumns.shown('Segment rows') && [
-          `MIN("num_rows") FILTER (WHERE is_published = 1 AND is_overshadowed = 0) AS min_segment_rows`,
-          `AVG("num_rows") FILTER (WHERE is_published = 1 AND is_overshadowed = 0) AS avg_segment_rows`,
-          `MAX("num_rows") FILTER (WHERE is_published = 1 AND is_overshadowed = 0) AS max_segment_rows`,
+          `MIN("num_rows") FILTER (WHERE is_available = 1 AND is_realtime = 0) AS min_segment_rows`,
+          `AVG("num_rows") FILTER (WHERE is_available = 1 AND is_realtime = 0) AS avg_segment_rows`,
+          `MAX("num_rows") FILTER (WHERE is_available = 1 AND is_realtime = 0) AS max_segment_rows`,
         ],
         visibleColumns.shown('Segment size') && [
-          `MIN("size") FILTER (WHERE is_published = 1 AND is_overshadowed = 0) AS min_segment_size`,
-          `AVG("size") FILTER (WHERE is_published = 1 AND is_overshadowed = 0) AS avg_segment_size`,
-          `MAX("size") FILTER (WHERE is_published = 1 AND is_overshadowed = 0) AS max_segment_size`,
+          `MIN("size") FILTER (WHERE is_active = 1 AND is_realtime = 0) AS min_segment_size`,
+          `AVG("size") FILTER (WHERE is_active = 1 AND is_realtime = 0) AS avg_segment_size`,
+          `MAX("size") FILTER (WHERE is_active = 1 AND is_realtime = 0) AS max_segment_size`,
         ],
         visibleColumns.shown('Segment granularity') && [
-          `COUNT(*) FILTER (WHERE ((is_published = 1 AND is_overshadowed = 0) OR is_realtime = 1) AND "start" LIKE '%:00.000Z' AND "end" LIKE '%:00.000Z') AS minute_aligned_segments`,
-          `COUNT(*) FILTER (WHERE ((is_published = 1 AND is_overshadowed = 0) OR is_realtime = 1) AND "start" LIKE '%:00:00.000Z' AND "end" LIKE '%:00:00.000Z') AS hour_aligned_segments`,
-          `COUNT(*) FILTER (WHERE ((is_published = 1 AND is_overshadowed = 0) OR is_realtime = 1) AND "start" LIKE '%T00:00:00.000Z' AND "end" LIKE '%T00:00:00.000Z') AS day_aligned_segments`,
-          `COUNT(*) FILTER (WHERE ((is_published = 1 AND is_overshadowed = 0) OR is_realtime = 1) AND "start" LIKE '%-01T00:00:00.000Z' AND "end" LIKE '%-01T00:00:00.000Z') AS month_aligned_segments`,
-          `COUNT(*) FILTER (WHERE ((is_published = 1 AND is_overshadowed = 0) OR is_realtime = 1) AND "start" LIKE '%-01-01T00:00:00.000Z' AND "end" LIKE '%-01-01T00:00:00.000Z') AS year_aligned_segments`,
-          `COUNT(*) FILTER (WHERE ((is_published = 1 AND is_overshadowed = 0) OR is_realtime = 1) AND "start" = '-146136543-09-08T08:23:32.096Z' AND "end" = '146140482-04-24T15:36:27.903Z') AS all_granularity_segments`,
+          `COUNT(*) FILTER (WHERE is_active = 1 AND "start" LIKE '%:00.000Z' AND "end" LIKE '%:00.000Z') AS minute_aligned_segments`,
+          `COUNT(*) FILTER (WHERE is_active = 1 AND "start" LIKE '%:00:00.000Z' AND "end" LIKE '%:00:00.000Z') AS hour_aligned_segments`,
+          `COUNT(*) FILTER (WHERE is_active = 1 AND "start" LIKE '%T00:00:00.000Z' AND "end" LIKE '%T00:00:00.000Z') AS day_aligned_segments`,
+          `COUNT(*) FILTER (WHERE is_active = 1 AND "start" LIKE '%-01T00:00:00.000Z' AND "end" LIKE '%-01T00:00:00.000Z') AS month_aligned_segments`,
+          `COUNT(*) FILTER (WHERE is_active = 1 AND "start" LIKE '%-01-01T00:00:00.000Z' AND "end" LIKE '%-01-01T00:00:00.000Z') AS year_aligned_segments`,
+          `COUNT(*) FILTER (WHERE is_active = 1 AND "start" = '${START_OF_TIME_DATE}' AND "end" = '${END_OF_TIME_DATE}') AS all_granularity_segments`,
         ],
         visibleColumns.shown('Total rows') &&
-          `SUM("num_rows") FILTER (WHERE (is_published = 1 AND is_overshadowed = 0) OR is_realtime = 1) AS total_rows`,
+          `SUM("num_rows") FILTER (WHERE is_active = 1) AS total_rows`,
         visibleColumns.shown('Avg. row size') &&
-          `CASE WHEN SUM("num_rows") FILTER (WHERE is_published = 1 AND is_overshadowed = 0) <> 0 THEN (SUM("size") FILTER (WHERE is_published = 1 AND is_overshadowed = 0) / SUM("num_rows") FILTER (WHERE is_published = 1 AND is_overshadowed = 0)) ELSE 0 END AS avg_row_size`,
+          `CASE WHEN SUM("num_rows") FILTER (WHERE is_available = 1) <> 0 THEN (SUM("size") FILTER (WHERE is_available = 1) / SUM("num_rows") FILTER (WHERE is_available = 1)) ELSE 0 END AS avg_row_size`,
         visibleColumns.shown('Replicated size') &&
-          `SUM("size" * "num_replicas") FILTER (WHERE is_published = 1 AND is_overshadowed = 0) AS replicated_size`,
+          `SUM("size" * "num_replicas") FILTER (WHERE is_active = 1) AS replicated_size`,
       ].flat(),
     );
 
@@ -325,9 +394,14 @@ export class DatasourcesView extends React.PureComponent<
     return `SELECT
 ${columns.join(',\n')}
 FROM sys.segments
-GROUP BY 1
-ORDER BY 1`;
+GROUP BY datasource
+ORDER BY datasource`;
   }
+
+  static RUNNING_TASK_SQL = `SELECT
+  "datasource", "type", COUNT(*) AS "num_running_tasks"
+FROM sys.tasks WHERE "status" = 'RUNNING' AND "runner_status" = 'RUNNING'
+GROUP BY 1, 2`;
 
   static formatRules(rules: Rule[]): string {
     if (rules.length === 0) {
@@ -344,21 +418,11 @@ ORDER BY 1`;
     DatasourcesAndDefaultRules
   >;
 
-  private readonly tiersQueryManager: QueryManager<Capabilities, string[]>;
-
-  constructor(props: DatasourcesViewProps, context: any) {
-    super(props, context);
-
-    const datasourceFilter: Filter[] = [];
-    if (props.initDatasource) {
-      datasourceFilter.push({ id: 'datasource', value: `=${props.initDatasource}` });
-    }
+  constructor(props: DatasourcesViewProps) {
+    super(props);
 
     this.state = {
-      datasourceFilter,
       datasourcesAndDefaultRulesState: QueryState.INIT,
-
-      tiersState: QueryState.INIT,
 
       showUnused: false,
       useUnuseAction: 'unuse',
@@ -368,29 +432,31 @@ ORDER BY 1`;
         LocalStorageKeys.DATASOURCE_TABLE_COLUMN_SELECTION,
         ['Segment size', 'Segment granularity'],
       ),
-      showSegmentTimeline: false,
 
       actions: [],
     };
 
-    this.datasourceQueryManager = new QueryManager({
+    this.datasourceQueryManager = new QueryManager<DatasourceQuery, DatasourcesAndDefaultRules>({
       processQuery: async (
         { capabilities, visibleColumns, showUnused },
-        _cancelToken,
-        setIntermediateQuery,
+        signal,
+        { setIntermediateQuery },
       ) => {
         let datasources: DatasourceQueryResultRow[];
         if (capabilities.hasSql()) {
           const query = DatasourcesView.query(visibleColumns);
           setIntermediateQuery(query);
-          datasources = await queryDruidSql({ query });
+          datasources = await queryDruidSql({ query, context: { engine: 'native' } }, signal);
         } else if (capabilities.hasCoordinatorAccess()) {
-          const datasourcesResp = await Api.instance.get(
+          const datasourcesResp = await getApiArray(
             '/druid/coordinator/v1/datasources?simple',
+            signal,
           );
-          const loadstatusResp = await Api.instance.get('/druid/coordinator/v1/loadstatus?simple');
+          const loadstatusResp = await Api.instance.get('/druid/coordinator/v1/loadstatus?simple', {
+            signal,
+          });
           const loadstatus = loadstatusResp.data;
-          datasources = datasourcesResp.data.map((d: any): DatasourceQueryResultRow => {
+          datasources = datasourcesResp.map((d: any): DatasourceQueryResultRow => {
             const totalDataSize = deepGet(d, 'properties.segments.size') || -1;
             const segmentsToLoad = Number(loadstatus[d.name] || 0);
             const availableSegments = Number(deepGet(d, 'properties.segments.count'));
@@ -398,6 +464,7 @@ ORDER BY 1`;
             return {
               datasource: d.name,
               num_segments: numSegments,
+              num_zero_replica_segments: 0,
               num_segments_to_load: segmentsToLoad,
               num_segments_to_drop: 0,
               minute_aligned_segments: -1,
@@ -422,55 +489,177 @@ ORDER BY 1`;
           throw new Error(`must have SQL or coordinator access`);
         }
 
-        if (!capabilities.hasCoordinatorAccess()) {
-          return {
-            datasources: datasources.map(ds => ({ ...ds, rules: [] })),
-            defaultRules: [],
-          };
-        }
+        const auxiliaryQueries: AuxiliaryQueryFn<DatasourcesAndDefaultRules>[] = [];
 
-        const seen = countBy(datasources, x => x.datasource);
+        if (visibleColumns.shown('Running tasks')) {
+          if (capabilities.hasSql()) {
+            auxiliaryQueries.push(async (datasourcesAndDefaultRules, signal) => {
+              try {
+                const runningTasks = await queryDruidSql<RunningTaskRow>(
+                  {
+                    query: DatasourcesView.RUNNING_TASK_SQL,
+                    context: { engine: 'native' },
+                  },
+                  signal,
+                );
+
+                const runningTasksByDatasource = groupByAsMap(
+                  runningTasks,
+                  x => x.datasource,
+                  xs =>
+                    groupByAsMap(
+                      xs,
+                      x => normalizeTaskType(x.type),
+                      ys => sum(ys, y => y.num_running_tasks),
+                    ),
+                );
+
+                return {
+                  ...datasourcesAndDefaultRules,
+                  datasources: datasourcesAndDefaultRules.datasources.map(ds => ({
+                    ...ds,
+                    runningTasks: runningTasksByDatasource[ds.datasource] || {},
+                  })),
+                };
+              } catch {
+                AppToaster.show({
+                  icon: IconNames.ERROR,
+                  intent: Intent.DANGER,
+                  message: 'Could not get running task counts',
+                });
+                return datasourcesAndDefaultRules;
+              }
+            });
+          } else if (capabilities.hasOverlordAccess()) {
+            auxiliaryQueries.push(async (datasourcesAndDefaultRules, signal) => {
+              try {
+                const taskList = await getApiArray(`/druid/indexer/v1/tasks?state=running`, signal);
+
+                const runningTasksByDatasource = groupByAsMap(
+                  taskList,
+                  (t: any) => t.dataSource,
+                  xs =>
+                    groupByAsMap(
+                      xs,
+                      x => normalizeTaskType(x.type),
+                      ys => ys.length,
+                    ),
+                );
+
+                return {
+                  ...datasourcesAndDefaultRules,
+                  datasources: datasourcesAndDefaultRules.datasources.map(ds => ({
+                    ...ds,
+                    runningTasks: runningTasksByDatasource[ds.datasource] || {},
+                  })),
+                };
+              } catch {
+                AppToaster.show({
+                  icon: IconNames.ERROR,
+                  intent: Intent.DANGER,
+                  message: 'Could not get running task counts',
+                });
+                return datasourcesAndDefaultRules;
+              }
+            });
+          }
+        }
 
         let unused: string[] = [];
-        if (showUnused) {
-          const unusedResp = await Api.instance.get<string[]>(
-            '/druid/coordinator/v1/metadata/datasources?includeUnused',
-          );
-          unused = unusedResp.data.filter(d => !seen[d]);
+        if (capabilities.hasCoordinatorAccess()) {
+          // Unused
+          const seen = countBy(datasources, x => x.datasource);
+          if (showUnused) {
+            try {
+              unused = (
+                await getApiArray<string>(
+                  '/druid/coordinator/v1/metadata/datasources?includeUnused',
+                )
+              ).filter(d => !seen[d]);
+            } catch {
+              AppToaster.show({
+                icon: IconNames.ERROR,
+                intent: Intent.DANGER,
+                message: 'Could not get the list of unused datasources',
+              });
+            }
+          }
+
+          // Rules
+          auxiliaryQueries.push(async (datasourcesAndDefaultRules, signal) => {
+            try {
+              const rules = (
+                await Api.instance.get<Record<string, Rule[]>>('/druid/coordinator/v1/rules', {
+                  signal,
+                })
+              ).data;
+
+              return {
+                datasources: datasourcesAndDefaultRules.datasources.map(ds => ({
+                  ...ds,
+                  rules: rules[ds.datasource] || [],
+                })),
+                defaultRules: rules[RuleUtil.DEFAULT_RULES_KEY],
+              };
+            } catch {
+              AppToaster.show({
+                icon: IconNames.ERROR,
+                intent: Intent.DANGER,
+                message: 'Could not get load rules',
+              });
+              return datasourcesAndDefaultRules;
+            }
+          });
+
+          // Compaction
+          auxiliaryQueries.push(async (datasourcesAndDefaultRules, signal) => {
+            try {
+              const compactionConfigsAndMore = (
+                await Api.instance.get<CompactionConfigs>(
+                  '/druid/indexer/v1/compaction/config/datasources',
+                  { signal },
+                )
+              ).data;
+              const compactionConfigs = lookupBy(
+                compactionConfigsAndMore.compactionConfigs || [],
+                c => c.dataSource,
+              );
+
+              const compactionStatusesResp = await Api.instance.get<{
+                latestStatus: CompactionStatus[];
+              }>('/druid/indexer/v1/compaction/status/datasources', { signal });
+              const compactionStatuses = lookupBy(
+                compactionStatusesResp.data.latestStatus || [],
+                c => c.dataSource,
+              );
+
+              return {
+                ...datasourcesAndDefaultRules,
+                datasources: datasourcesAndDefaultRules.datasources.map(ds => ({
+                  ...ds,
+                  compaction: {
+                    config: compactionConfigs[ds.datasource],
+                    status: compactionStatuses[ds.datasource],
+                  },
+                })),
+              };
+            } catch {
+              AppToaster.show({
+                icon: IconNames.ERROR,
+                intent: Intent.DANGER,
+                message: 'Could not get compaction information',
+              });
+              return datasourcesAndDefaultRules;
+            }
+          });
         }
 
-        const rulesResp = await Api.instance.get<Record<string, Rule[]>>(
-          '/druid/coordinator/v1/rules',
+        return new ResultWithAuxiliaryWork(
+          {
+            datasources: datasources.concat(unused.map(makeUnusedDatasource)),
+          },
+          auxiliaryQueries,
         );
-        const rules = rulesResp.data;
-
-        const compactionConfigsResp = await Api.instance.get<{
-          compactionConfigs: CompactionConfig[];
-        }>('/druid/coordinator/v1/config/compaction');
-        const compactionConfigs = lookupBy(
-          compactionConfigsResp.data.compactionConfigs || [],
-          c => c.dataSource,
-        );
-
-        const compactionStatusesResp = await Api.instance.get<{ latestStatus: CompactionStatus[] }>(
-          '/druid/coordinator/v1/compaction/status',
-        );
-        const compactionStatuses = lookupBy(
-          compactionStatusesResp.data.latestStatus || [],
-          c => c.dataSource,
-        );
-
-        return {
-          datasources: datasources.concat(unused.map(makeUnusedDatasource)).map(ds => {
-            return {
-              ...ds,
-              rules: rules[ds.datasource] || [],
-              compactionConfig: compactionConfigs[ds.datasource],
-              compactionStatus: compactionStatuses[ds.datasource],
-            };
-          }),
-          defaultRules: rules[DEFAULT_RULES_KEY] || [],
-        };
       },
       onStateChange: datasourcesAndDefaultRulesState => {
         this.setState({
@@ -478,43 +667,36 @@ ORDER BY 1`;
         });
       },
     });
-
-    this.tiersQueryManager = new QueryManager({
-      processQuery: async capabilities => {
-        if (capabilities.hasCoordinatorAccess()) {
-          const tiersResp = await Api.instance.get('/druid/coordinator/v1/tiers');
-          return tiersResp.data;
-        } else {
-          throw new Error(`must have coordinator access`);
-        }
-      },
-      onStateChange: tiersState => {
-        this.setState({ tiersState });
-      },
-    });
   }
 
   private readonly refresh = (auto: boolean): void => {
-    if (auto && hasPopoverOpen()) return;
+    if (auto && hasOverlayOpen()) return;
     this.datasourceQueryManager.rerunLastQuery(auto);
-    this.tiersQueryManager.rerunLastQuery(auto);
+
+    const { showSegmentTimeline } = this.state;
+    if (showSegmentTimeline) {
+      // Create a new capabilities object to force the segment timeline to re-render
+      this.setState(({ showSegmentTimeline }) => ({
+        showSegmentTimeline: {
+          ...showSegmentTimeline,
+          capabilities: this.props.capabilities.clone(),
+        },
+      }));
+    }
   };
 
-  private fetchDatasourceData() {
+  private readonly fetchData = () => {
     const { capabilities } = this.props;
     const { visibleColumns, showUnused } = this.state;
     this.datasourceQueryManager.runQuery({ capabilities, visibleColumns, showUnused });
-  }
+  };
 
   componentDidMount(): void {
-    const { capabilities } = this.props;
-    this.fetchDatasourceData();
-    this.tiersQueryManager.runQuery(capabilities);
+    this.fetchData();
   }
 
   componentWillUnmount(): void {
     this.datasourceQueryManager.terminate();
-    this.tiersQueryManager.terminate();
   }
 
   renderUnuseAction() {
@@ -525,7 +707,7 @@ ORDER BY 1`;
       <AsyncActionDialog
         action={async () => {
           const resp = await Api.instance.delete(
-            `/druid/coordinator/v1/datasources/${Api.encodePath(
+            `/druid/indexer/v1/datasources/${Api.encodePath(
               datasourceToMarkAsUnusedAllSegmentsIn,
             )}`,
             {},
@@ -533,15 +715,23 @@ ORDER BY 1`;
           return resp.data;
         }}
         confirmButtonText="Mark as unused all segments"
-        successText="All segments in datasource have been marked as unused"
-        failText="Failed to mark as unused all segments in datasource"
+        successText={
+          <>
+            All segments in datasource <Tag minimal>{datasourceToMarkAsUnusedAllSegmentsIn}</Tag>{' '}
+            have been marked as unused
+          </>
+        }
+        failText={
+          <>
+            Failed to mark as unused all segments in datasource{' '}
+            <Tag minimal>{datasourceToMarkAsUnusedAllSegmentsIn}</Tag>
+          </>
+        }
         intent={Intent.DANGER}
         onClose={() => {
           this.setState({ datasourceToMarkAsUnusedAllSegmentsIn: undefined });
         }}
-        onSuccess={() => {
-          this.fetchDatasourceData();
-        }}
+        onSuccess={this.fetchData}
       >
         <p>
           {`Are you sure you want to mark as unused all segments in '${datasourceToMarkAsUnusedAllSegmentsIn}'?`}
@@ -558,7 +748,7 @@ ORDER BY 1`;
       <AsyncActionDialog
         action={async () => {
           const resp = await Api.instance.post(
-            `/druid/coordinator/v1/datasources/${Api.encodePath(
+            `/druid/indexer/v1/datasources/${Api.encodePath(
               datasourceToMarkAllNonOvershadowedSegmentsAsUsedIn,
             )}`,
             {},
@@ -566,15 +756,24 @@ ORDER BY 1`;
           return resp.data;
         }}
         confirmButtonText="Mark as used all segments"
-        successText="All non-overshadowed segments in datasource have been marked as used"
-        failText="Failed to mark as used all non-overshadowed segments in datasource"
+        successText={
+          <>
+            All non-overshadowed segments in datasource{' '}
+            <Tag minimal>{datasourceToMarkAllNonOvershadowedSegmentsAsUsedIn}</Tag> have been marked
+            as used
+          </>
+        }
+        failText={
+          <>
+            Failed to mark as used all non-overshadowed segments in datasource{' '}
+            <Tag minimal>{datasourceToMarkAllNonOvershadowedSegmentsAsUsedIn}</Tag>
+          </>
+        }
         intent={Intent.PRIMARY}
         onClose={() => {
           this.setState({ datasourceToMarkAllNonOvershadowedSegmentsAsUsedIn: undefined });
         }}
-        onSuccess={() => {
-          this.fetchDatasourceData();
-        }}
+        onSuccess={this.fetchData}
       >
         <p>{`Are you sure you want to mark as used all non-overshadowed segments in '${datasourceToMarkAllNonOvershadowedSegmentsAsUsedIn}'?`}</p>
       </AsyncActionDialog>
@@ -592,7 +791,7 @@ ORDER BY 1`;
           if (!useUnuseInterval) return;
           const param = isUse ? 'markUsed' : 'markUnused';
           const resp = await Api.instance.post(
-            `/druid/coordinator/v1/datasources/${Api.encodePath(
+            `/druid/indexer/v1/datasources/${Api.encodePath(
               datasourceToMarkSegmentsByIntervalIn,
             )}/${Api.encodePath(param)}`,
             {
@@ -609,9 +808,7 @@ ORDER BY 1`;
         onClose={() => {
           this.setState({ datasourceToMarkSegmentsByIntervalIn: undefined });
         }}
-        onSuccess={() => {
-          this.fetchDatasourceData();
-        }}
+        onSuccess={this.fetchData}
       >
         <p>{`Please select the interval in which you want to mark segments as ${usedWord} in '${datasourceToMarkSegmentsByIntervalIn}'?`}</p>
         <FormGroup>
@@ -633,36 +830,13 @@ ORDER BY 1`;
     if (!killDatasource) return;
 
     return (
-      <AsyncActionDialog
-        action={async () => {
-          const resp = await Api.instance.delete(
-            `/druid/coordinator/v1/datasources/${Api.encodePath(
-              killDatasource,
-            )}?kill=true&interval=1000/3000`,
-            {},
-          );
-          return resp.data;
-        }}
-        confirmButtonText="Permanently delete unused segments"
-        successText="Kill task was issued. Unused segments in datasource will be deleted"
-        failText="Failed submit kill task"
-        intent={Intent.DANGER}
+      <KillDatasourceDialog
+        datasource={killDatasource}
         onClose={() => {
           this.setState({ killDatasource: undefined });
         }}
-        onSuccess={() => {
-          this.fetchDatasourceData();
-        }}
-        warningChecks={[
-          `I understand that this operation will delete all metadata about the unused segments of ${killDatasource} and removes them from deep storage.`,
-          'I understand that this operation cannot be undone.',
-        ]}
-      >
-        <p>
-          {`Are you sure you want to permanently delete unused segments in '${killDatasource}'?`}
-        </p>
-        <p>This action is not reversible and the data deleted will be lost.</p>
-      </AsyncActionDialog>
+        onSuccess={this.fetchData}
+      />
     );
   }
 
@@ -686,11 +860,11 @@ ORDER BY 1`;
       >
         {capabilities.hasSql() && (
           <MenuItem
-            icon={IconNames.APPLICATION}
+            icon={getConsoleViewIcon('workbench')}
             text="View SQL query for table"
-            disabled={!lastDatasourcesQuery}
+            disabled={typeof lastDatasourcesQuery !== 'string'}
             onClick={() => {
-              if (!lastDatasourcesQuery) return;
+              if (typeof lastDatasourcesQuery !== 'string') return;
               goToQuery({ queryString: lastDatasourcesQuery });
             }}
           />
@@ -749,32 +923,38 @@ ORDER BY 1`;
       message: 'Retention rules submitted successfully',
       intent: Intent.SUCCESS,
     });
-    this.fetchDatasourceData();
+    this.fetchData();
   };
 
   private readonly editDefaultRules = () => {
     this.setState({ retentionDialogOpenOn: undefined });
     setTimeout(() => {
       this.setState(state => {
-        const datasourcesAndDefaultRules = state.datasourcesAndDefaultRulesState.data;
-        if (!datasourcesAndDefaultRules) return {};
+        const defaultRules = state.datasourcesAndDefaultRulesState.data?.defaultRules;
+        if (!defaultRules) return {};
 
         return {
           retentionDialogOpenOn: {
             datasource: '_default',
-            rules: datasourcesAndDefaultRules.defaultRules,
+            rules: defaultRules,
+            defaultRules,
           },
         };
       });
     }, 50);
   };
 
-  private readonly saveCompaction = async (compactionConfig: any) => {
+  private readonly saveCompaction = async (compactionConfig: CompactionConfig) => {
     if (!compactionConfig) return;
     try {
-      await Api.instance.post(`/druid/coordinator/v1/config/compaction`, compactionConfig);
+      await Api.instance.post(
+        `/druid/indexer/v1/compaction/config/datasources/${Api.encodePath(
+          compactionConfig.dataSource,
+        )}`,
+        compactionConfig,
+      );
       this.setState({ compactionDialogOpenOn: undefined });
-      this.fetchDatasourceData();
+      this.fetchData();
     } catch (e) {
       AppToaster.show({
         message: getDruidErrorMessage(e),
@@ -792,12 +972,13 @@ ORDER BY 1`;
       intent: Intent.DANGER,
       action: {
         text: 'Confirm',
+        // eslint-disable-next-line @typescript-eslint/no-misused-promises
         onClick: async () => {
           try {
             await Api.instance.delete(
-              `/druid/coordinator/v1/config/compaction/${Api.encodePath(datasource)}`,
+              `/druid/indexer/v1/compaction/config/datasources/${Api.encodePath(datasource)}`,
             );
-            this.setState({ compactionDialogOpenOn: undefined }, () => this.fetchDatasourceData());
+            this.setState({ compactionDialogOpenOn: undefined }, () => this.fetchData());
           } catch (e) {
             AppToaster.show({
               message: getDruidErrorMessage(e),
@@ -812,47 +993,36 @@ ORDER BY 1`;
   private toggleUnused(showUnused: boolean) {
     this.setState({ showUnused: !showUnused }, () => {
       if (showUnused) return;
-      this.fetchDatasourceData();
+      this.fetchData();
     });
   }
 
   getDatasourceActions(
     datasource: string,
     unused: boolean | undefined,
-    rules: Rule[],
-    compactionConfig: CompactionConfig | undefined,
+    rules: Rule[] | undefined,
+    compactionInfo: CompactionInfo | undefined,
   ): BasicAction[] {
-    const { goToQuery, goToTask, capabilities } = this.props;
-
-    const goToActions: BasicAction[] = [];
-
-    if (capabilities.hasSql()) {
-      goToActions.push({
-        icon: IconNames.APPLICATION,
-        title: 'Query with SQL',
-        onAction: () => goToQuery({ queryString: SqlQuery.create(T(datasource)).toString() }),
-      });
-    }
-
-    goToActions.push({
-      icon: IconNames.GANTT_CHART,
-      title: 'Go to tasks',
-      onAction: () => goToTask(datasource),
-    });
-
-    if (!capabilities.hasCoordinatorAccess()) {
-      return goToActions;
-    }
+    const { goToQuery, goToView, capabilities } = this.props;
 
     if (unused) {
+      if (!capabilities.hasOverlordAccess()) return [];
       return [
         {
           icon: IconNames.EXPORT,
           title: 'Mark as used all segments',
-
           onAction: () =>
             this.setState({
               datasourceToMarkAllNonOvershadowedSegmentsAsUsedIn: datasource,
+            }),
+        },
+        {
+          icon: IconNames.EXPORT,
+          title: 'Mark as used segments by interval',
+          onAction: () =>
+            this.setState({
+              datasourceToMarkSegmentsByIntervalIn: datasource,
+              useUnuseAction: 'use',
             }),
         },
         {
@@ -863,102 +1033,129 @@ ORDER BY 1`;
         },
       ];
     } else {
-      return goToActions.concat([
+      return compact([
+        capabilities.hasSql()
+          ? {
+              icon: getConsoleViewIcon('workbench'),
+              title: 'Query with SQL',
+              onAction: () =>
+                goToQuery({ queryString: SqlQuery.selectStarFrom(T(datasource)).toString() }),
+            }
+          : undefined,
         {
-          icon: IconNames.AUTOMATIC_UPDATES,
-          title: 'Edit retention rules',
+          icon: getConsoleViewIcon('segments'),
+          title: 'Go to segments',
           onAction: () => {
-            this.setState({
-              retentionDialogOpenOn: {
-                datasource,
-                rules,
-              },
-            });
+            goToView('segments', TableFilters.eq({ datasource }));
           },
         },
-        {
-          icon: IconNames.REFRESH,
-          title: 'Mark as used all segments (will lead to reapplying retention rules)',
-          onAction: () =>
-            this.setState({
-              datasourceToMarkAllNonOvershadowedSegmentsAsUsedIn: datasource,
-            }),
-        },
-        {
-          icon: IconNames.COMPRESSED,
-          title: 'Edit compaction configuration',
-          onAction: () => {
-            this.setState({
-              compactionDialogOpenOn: {
-                datasource,
-                compactionConfig,
+        capabilities.hasCoordinatorAccess()
+          ? {
+              icon: IconNames.AUTOMATIC_UPDATES,
+              title: 'Edit retention rules',
+              onAction: () => {
+                const defaultRules = this.state.datasourcesAndDefaultRulesState.data?.defaultRules;
+                if (!defaultRules) return;
+                this.setState({
+                  retentionDialogOpenOn: {
+                    datasource,
+                    rules: rules || [],
+                    defaultRules,
+                  },
+                });
               },
-            });
-          },
-        },
-        {
-          icon: IconNames.EXPORT,
-          title: 'Mark as used segments by interval',
-
-          onAction: () =>
-            this.setState({
-              datasourceToMarkSegmentsByIntervalIn: datasource,
-              useUnuseAction: 'use',
-            }),
-        },
-        {
-          icon: IconNames.IMPORT,
-          title: 'Mark as unused segments by interval',
-
-          onAction: () =>
-            this.setState({
-              datasourceToMarkSegmentsByIntervalIn: datasource,
-              useUnuseAction: 'unuse',
-            }),
-        },
-        {
-          icon: IconNames.IMPORT,
-          title: 'Mark as unused all segments',
-          intent: Intent.DANGER,
-          onAction: () => this.setState({ datasourceToMarkAsUnusedAllSegmentsIn: datasource }),
-        },
-        {
-          icon: IconNames.TRASH,
-          title: 'Delete unused segments (issue kill task)',
-          intent: Intent.DANGER,
-          onAction: () => this.setState({ killDatasource: datasource }),
-        },
+            }
+          : undefined,
+        capabilities.hasOverlordAccess()
+          ? {
+              icon: IconNames.REFRESH,
+              title: 'Mark as used all segments (will lead to reapplying retention rules)',
+              onAction: () =>
+                this.setState({
+                  datasourceToMarkAllNonOvershadowedSegmentsAsUsedIn: datasource,
+                }),
+            }
+          : undefined,
+        capabilities.hasCoordinatorAccess() && compactionInfo
+          ? {
+              icon: IconNames.COMPRESSED,
+              title: 'Edit compaction configuration',
+              onAction: () => {
+                this.setState({
+                  compactionDialogOpenOn: {
+                    datasource,
+                    compactionConfig: compactionInfo.config,
+                  },
+                });
+              },
+            }
+          : undefined,
+        capabilities.hasOverlordAccess()
+          ? {
+              icon: IconNames.EXPORT,
+              title: 'Mark as used segments by interval',
+              onAction: () =>
+                this.setState({
+                  datasourceToMarkSegmentsByIntervalIn: datasource,
+                  useUnuseAction: 'use',
+                }),
+            }
+          : undefined,
+        capabilities.hasOverlordAccess()
+          ? {
+              icon: IconNames.IMPORT,
+              title: 'Mark as unused segments by interval',
+              onAction: () =>
+                this.setState({
+                  datasourceToMarkSegmentsByIntervalIn: datasource,
+                  useUnuseAction: 'unuse',
+                }),
+            }
+          : undefined,
+        capabilities.hasOverlordAccess()
+          ? {
+              icon: IconNames.IMPORT,
+              title: 'Mark as unused all segments',
+              intent: Intent.DANGER,
+              onAction: () => this.setState({ datasourceToMarkAsUnusedAllSegmentsIn: datasource }),
+            }
+          : undefined,
+        capabilities.hasOverlordAccess()
+          ? {
+              icon: IconNames.TRASH,
+              title: 'Delete unused segments (issue kill task)',
+              intent: Intent.DANGER,
+              onAction: () => this.setState({ killDatasource: datasource }),
+            }
+          : undefined,
       ]);
     }
   }
 
-  private renderRetentionDialog(): JSX.Element | undefined {
-    const { retentionDialogOpenOn, tiersState, datasourcesAndDefaultRulesState } = this.state;
-    const { defaultRules } = datasourcesAndDefaultRulesState.data || {
-      datasources: [],
-      defaultRules: [],
-    };
+  private renderRetentionDialog() {
+    const { capabilities } = this.props;
+    const { retentionDialogOpenOn } = this.state;
     if (!retentionDialogOpenOn) return;
 
     return (
       <RetentionDialog
         datasource={retentionDialogOpenOn.datasource}
         rules={retentionDialogOpenOn.rules}
-        tiers={tiersState.data || []}
+        capabilities={capabilities}
         onEditDefaults={this.editDefaultRules}
-        defaultRules={defaultRules}
+        defaultRules={retentionDialogOpenOn.defaultRules}
         onCancel={() => this.setState({ retentionDialogOpenOn: undefined })}
         onSave={this.saveRules}
       />
     );
   }
 
-  private renderCompactionDialog() {
+  private renderCompactionConfigDialog() {
     const { datasourcesAndDefaultRulesState, compactionDialogOpenOn } = this.state;
     if (!compactionDialogOpenOn || !datasourcesAndDefaultRulesState.data) return;
 
     return (
-      <CompactionDialog
+      <CompactionConfigDialog
         datasource={compactionDialogOpenOn.datasource}
         compactionConfig={compactionDialogOpenOn.compactionConfig}
         onClose={() => this.setState({ compactionDialogOpenOn: undefined })}
@@ -969,22 +1166,20 @@ ORDER BY 1`;
   }
 
   private onDetail(datasource: Datasource): void {
-    const { unused, rules, compactionConfig } = datasource;
+    const { unused, rules, compaction } = datasource;
 
     this.setState({
       datasourceTableActionDialogId: datasource.datasource,
-      actions: this.getDatasourceActions(datasource.datasource, unused, rules, compactionConfig),
+      actions: this.getDatasourceActions(datasource.datasource, unused, rules, compaction),
     });
   }
 
   private renderDatasourcesTable() {
-    const { goToSegments, capabilities } = this.props;
-    const { datasourcesAndDefaultRulesState, datasourceFilter, showUnused, visibleColumns } =
+    const { goToView, capabilities, filters, onFiltersChange } = this.props;
+    const { datasourcesAndDefaultRulesState, showUnused, visibleColumns, showSegmentTimeline } =
       this.state;
 
-    let { datasources, defaultRules } = datasourcesAndDefaultRulesState.data
-      ? datasourcesAndDefaultRulesState.data
-      : { datasources: [], defaultRules: [] };
+    let { datasources, defaultRules } = datasourcesAndDefaultRulesState.data || { datasources: [] };
 
     if (!showUnused) {
       datasources = datasources.filter(d => !d.unused);
@@ -1009,13 +1204,13 @@ ORDER BY 1`;
     const replicatedSizeValues = datasources.map(d => formatReplicatedSize(d.replicated_size));
 
     const leftToBeCompactedValues = datasources.map(d =>
-      d.compactionStatus
-        ? formatLeftToBeCompacted(d.compactionStatus.bytesAwaitingCompaction)
+      d.compaction?.status
+        ? formatLeftToBeCompacted(d.compaction?.status.bytesAwaitingCompaction)
         : '-',
     );
 
     return (
-      <ReactTable
+      <ConsoleTable
         data={datasources}
         loading={datasourcesAndDefaultRulesState.loading}
         noDataText={
@@ -1025,10 +1220,8 @@ ORDER BY 1`;
             : '')
         }
         filterable
-        filtered={datasourceFilter}
-        onFilteredChange={filtered => {
-          this.setState({ datasourceFilter: filtered });
-        }}
+        filtered={filters.toFilters()}
+        onFilteredChange={filters => onFiltersChange(TableFilters.fromFilters(filters))}
         defaultPageSize={STANDARD_TABLE_PAGE_SIZE}
         pageSizeOptions={STANDARD_TABLE_PAGE_SIZE_OPTIONS}
         showPagination={datasources.length > STANDARD_TABLE_PAGE_SIZE}
@@ -1038,12 +1231,19 @@ ORDER BY 1`;
             show: visibleColumns.shown('Datasource name'),
             accessor: 'datasource',
             width: 150,
-            Cell: row => (
+            Cell: ({ value, original }) => (
               <TableClickableCell
-                onClick={() => this.onDetail(row.original)}
+                onClick={() => this.onDetail(original)}
                 hoverIcon={IconNames.SEARCH_TEMPLATE}
+                tooltip="Show detail"
               >
-                {row.value}
+                {showSegmentTimeline ? (
+                  <>
+                    <span style={{ color: getDatasourceColor(value) }}>&#9632;</span> {value}
+                  </>
+                ) : (
+                  value
+                )}
               </TableClickableCell>
             ),
           },
@@ -1052,10 +1252,22 @@ ORDER BY 1`;
             show: visibleColumns.shown('Availability'),
             filterable: false,
             width: 220,
-            accessor: 'num_segments',
+            id: 'num_segments',
+            accessor: ({ num_segments, num_segments_to_load }) => {
+              const total = Number(num_segments);
+              if (!total) return 0;
+              return (total - Number(num_segments_to_load)) / total;
+            },
             className: 'padded',
-            Cell: ({ value: num_segments, original }) => {
-              const { datasource, unused, num_segments_to_load } = original as Datasource;
+            Cell: ({ original }) => {
+              const {
+                datasource,
+                unused,
+                num_segments,
+                num_segments_to_load,
+                num_zero_replica_segments,
+                rules,
+              } = original;
               if (unused) {
                 return (
                   <span>
@@ -1065,59 +1277,78 @@ ORDER BY 1`;
                 );
               }
 
+              const hasZeroReplicationRule = RuleUtil.hasZeroReplicaRule(rules, defaultRules);
+              const descriptor = hasZeroReplicationRule ? 'pre-cached' : 'available';
               const segmentsEl = (
-                <a onClick={() => goToSegments(datasource)}>
+                <a
+                  onClick={() =>
+                    this.setState({ showSegmentTimeline: { capabilities, datasource } })
+                  }
+                  data-tooltip="Show in segment timeline"
+                >
                   {pluralIfNeeded(num_segments, 'segment')}
                 </a>
               );
-              if (typeof num_segments_to_load !== 'number' || typeof num_segments !== 'number') {
+              if (!isNumberLike(num_segments) || !isNumberLike(num_segments_to_load)) {
                 return '-';
-              } else if (num_segments === 0) {
+              }
+
+              const numSegments = Number(num_segments);
+              const numSegmentsToLoad = Number(num_segments_to_load);
+              const percentZeroReplica = (
+                Math.floor((Number(num_zero_replica_segments) / numSegments) * 1000) / 10
+              ).toFixed(1);
+
+              if (numSegments === 0) {
                 return (
                   <span>
                     <span style={{ color: DatasourcesView.EMPTY_COLOR }}>&#x25cf;&nbsp;</span>
                     Empty
                   </span>
                 );
-              } else if (num_segments_to_load === 0) {
+              } else if (numSegmentsToLoad === 0) {
                 return (
                   <span>
                     <span style={{ color: DatasourcesView.FULLY_AVAILABLE_COLOR }}>
                       &#x25cf;&nbsp;
                     </span>
-                    Fully available ({segmentsEl})
+                    {assemble(
+                      numSegments !== Number(num_zero_replica_segments)
+                        ? `Fully ${descriptor}`
+                        : undefined,
+                      hasZeroReplicationRule ? `${percentZeroReplica}% deep storage only` : '',
+                    ).join(', ')}{' '}
+                    ({segmentsEl})
                   </span>
                 );
               } else {
-                const numAvailableSegments = num_segments - num_segments_to_load;
+                const numAvailableSegments = numSegments - numSegmentsToLoad;
                 const percentAvailable = (
-                  Math.floor((numAvailableSegments / num_segments) * 1000) / 10
+                  Math.floor((numAvailableSegments / numSegments) * 1000) / 10
                 ).toFixed(1);
                 return (
                   <span>
                     <span style={{ color: DatasourcesView.PARTIALLY_AVAILABLE_COLOR }}>
                       {numAvailableSegments ? '\u25cf' : '\u25cb'}&nbsp;
                     </span>
-                    {percentAvailable}% available ({segmentsEl})
+                    {`${percentAvailable}% ${descriptor}${
+                      hasZeroReplicationRule ? `, ${percentZeroReplica}% deep storage only` : ''
+                    }`}{' '}
+                    ({segmentsEl})
                   </span>
                 );
               }
             },
-            sortMethod: (d1, d2) => {
-              const percentAvailable1 = d1.num_available / d1.num_total;
-              const percentAvailable2 = d2.num_available / d2.num_total;
-              return percentAvailable1 - percentAvailable2 || d1.num_total - d2.num_total;
-            },
           },
           {
-            Header: twoLines('Availability', 'detail'),
-            show: visibleColumns.shown('Availability detail'),
+            Header: twoLines('Historical', 'load/drop queues'),
+            show: visibleColumns.shown('Historical load/drop queues'),
             accessor: 'num_segments_to_load',
             filterable: false,
             width: 180,
             className: 'padded',
             Cell: ({ original }) => {
-              const { num_segments_to_load, num_segments_to_drop } = original as Datasource;
+              const { num_segments_to_load, num_segments_to_drop } = original;
               return formatLoadDrop(num_segments_to_load, num_segments_to_drop);
             },
           },
@@ -1133,6 +1364,29 @@ ORDER BY 1`;
             ),
           },
           {
+            Header: 'Running tasks',
+            show: visibleColumns.shown('Running tasks'),
+            id: 'running_tasks',
+            accessor: d => countRunningTasks(d.runningTasks),
+            filterable: false,
+            width: 200,
+            Cell: ({ original }) => {
+              const { runningTasks } = original;
+              if (!runningTasks) return;
+              return (
+                <TableClickableCell
+                  onClick={() =>
+                    goToView('tasks', TableFilters.eq({ datasource: original.datasource }))
+                  }
+                  hoverIcon={IconNames.ARROW_TOP_RIGHT}
+                  tooltip="Go to tasks"
+                >
+                  {formatRunningTasks(runningTasks)}
+                </TableClickableCell>
+              );
+            },
+          },
+          {
             Header: twoLines('Segment rows', 'minimum / average / maximum'),
             show: capabilities.hasSql() && visibleColumns.shown('Segment rows'),
             accessor: 'avg_segment_rows',
@@ -1140,7 +1394,7 @@ ORDER BY 1`;
             width: 230,
             className: 'padded',
             Cell: ({ value, original }) => {
-              const { min_segment_rows, max_segment_rows } = original as Datasource;
+              const { min_segment_rows, max_segment_rows } = original;
               if (
                 isNumberLikeNaN(value) ||
                 isNumberLikeNaN(min_segment_rows) ||
@@ -1172,7 +1426,7 @@ ORDER BY 1`;
             width: 270,
             className: 'padded',
             Cell: ({ value, original }) => {
-              const { min_segment_size, max_segment_size } = original as Datasource;
+              const { min_segment_size, max_segment_size } = original;
               if (
                 isNumberLikeNaN(value) ||
                 isNumberLikeNaN(min_segment_size) ||
@@ -1213,7 +1467,7 @@ ORDER BY 1`;
                 month_aligned_segments,
                 year_aligned_segments,
                 all_granularity_segments,
-              } = original as Datasource;
+              } = original;
               const segmentGranularities: string[] = [];
               if (!num_segments || isNumberLikeNaN(year_aligned_segments)) return '-';
               if (all_granularity_segments) {
@@ -1297,24 +1551,28 @@ ORDER BY 1`;
             Header: 'Compaction',
             show: capabilities.hasCoordinatorAccess() && visibleColumns.shown('Compaction'),
             id: 'compactionStatus',
-            accessor: row => Boolean(row.compactionStatus),
+            accessor: row => Boolean(row.compaction?.status),
             filterable: false,
-            width: 150,
+            width: 180,
             Cell: ({ original }) => {
-              const { datasource, compactionConfig, compactionStatus } = original as Datasource;
+              const { datasource, compaction } = original;
+              if (!compaction) return;
               return (
                 <TableClickableCell
-                  onClick={() =>
+                  tooltip="Open compaction configuration"
+                  disabled={!compaction}
+                  onClick={() => {
+                    if (!compaction) return;
                     this.setState({
                       compactionDialogOpenOn: {
                         datasource,
-                        compactionConfig,
+                        compactionConfig: compaction.config,
                       },
-                    })
-                  }
+                    });
+                  }}
                   hoverIcon={IconNames.EDIT}
                 >
-                  {formatCompactionConfigAndStatus(compactionConfig, compactionStatus)}
+                  {formatCompactionInfo(compaction)}
                 </TableClickableCell>
               );
             },
@@ -1324,17 +1582,19 @@ ORDER BY 1`;
             show: capabilities.hasCoordinatorAccess() && visibleColumns.shown('% Compacted'),
             id: 'percentCompacted',
             width: 200,
-            accessor: ({ compactionStatus }) =>
-              compactionStatus && compactionStatus.bytesCompacted
-                ? compactionStatus.bytesCompacted /
-                  (compactionStatus.bytesAwaitingCompaction + compactionStatus.bytesCompacted)
-                : 0,
+            accessor: ({ compaction }) => {
+              const status = compaction?.status;
+              if (!status) return 0;
+              return progress(status.bytesCompacted, status.bytesAwaitingCompaction);
+            },
             filterable: false,
             className: 'padded',
             Cell: ({ original }) => {
-              const { compactionStatus } = original as Datasource;
+              const { compaction } = original;
+              if (!compaction) return;
 
-              if (!compactionStatus || zeroCompactionStatus(compactionStatus)) {
+              const { status } = compaction;
+              if (!status || zeroCompactionStatus(status)) {
                 return (
                   <>
                     <BracedText text="-" braces={PERCENT_BRACES} /> &nbsp;{' '}
@@ -1348,10 +1608,14 @@ ORDER BY 1`;
                 <>
                   <BracedText
                     text={formatPercent(
-                      progress(
-                        compactionStatus.bytesCompacted,
-                        compactionStatus.bytesAwaitingCompaction,
-                      ),
+                      progress(status.bytesCompacted, status.bytesAwaitingCompaction),
+                    )}
+                    braces={PERCENT_BRACES}
+                  />{' '}
+                  &nbsp;{' '}
+                  <BracedText
+                    text={formatPercent(
+                      progress(status.segmentCountCompacted, status.segmentCountAwaitingCompaction),
                     )}
                     braces={PERCENT_BRACES}
                   />{' '}
@@ -1359,18 +1623,8 @@ ORDER BY 1`;
                   <BracedText
                     text={formatPercent(
                       progress(
-                        compactionStatus.segmentCountCompacted,
-                        compactionStatus.segmentCountAwaitingCompaction,
-                      ),
-                    )}
-                    braces={PERCENT_BRACES}
-                  />{' '}
-                  &nbsp;{' '}
-                  <BracedText
-                    text={formatPercent(
-                      progress(
-                        compactionStatus.intervalCountCompacted,
-                        compactionStatus.intervalCountAwaitingCompaction,
+                        status.intervalCountCompacted,
+                        status.intervalCountAwaitingCompaction,
                       ),
                     )}
                     braces={PERCENT_BRACES}
@@ -1385,20 +1639,24 @@ ORDER BY 1`;
               capabilities.hasCoordinatorAccess() && visibleColumns.shown('Left to be compacted'),
             id: 'leftToBeCompacted',
             width: 100,
-            accessor: ({ compactionStatus }) =>
-              (compactionStatus && compactionStatus.bytesAwaitingCompaction) || 0,
+            accessor: ({ compaction }) => {
+              const status = compaction?.status;
+              return status?.bytesAwaitingCompaction || 0;
+            },
             filterable: false,
             className: 'padded',
             Cell: ({ original }) => {
-              const { compactionStatus } = original as Datasource;
+              const { compaction } = original;
+              if (!compaction) return;
 
-              if (!compactionStatus) {
+              const { status } = compaction;
+              if (!status) {
                 return <BracedText text="-" braces={leftToBeCompactedValues} />;
               }
 
               return (
                 <BracedText
-                  text={formatLeftToBeCompacted(compactionStatus.bytesAwaitingCompaction)}
+                  text={formatLeftToBeCompacted(status.bytesAwaitingCompaction)}
                   braces={leftToBeCompactedValues}
                 />
               );
@@ -1408,51 +1666,61 @@ ORDER BY 1`;
             Header: 'Retention',
             show: capabilities.hasCoordinatorAccess() && visibleColumns.shown('Retention'),
             id: 'retention',
-            accessor: row => row.rules.length,
+            accessor: row => row.rules?.length || 0,
             filterable: false,
             width: 200,
             Cell: ({ original }) => {
-              const { datasource, rules } = original as Datasource;
+              const { datasource, rules } = original;
+              if (!rules) return;
+
               return (
                 <TableClickableCell
-                  onClick={() =>
+                  tooltip="Open retention (load rule) configuration"
+                  disabled={!defaultRules}
+                  onClick={() => {
+                    if (!defaultRules) return;
                     this.setState({
                       retentionDialogOpenOn: {
                         datasource,
                         rules,
+                        defaultRules,
                       },
-                    })
-                  }
+                    });
+                  }}
                   hoverIcon={IconNames.EDIT}
                 >
                   {rules.length
                     ? DatasourcesView.formatRules(rules)
-                    : `Cluster default: ${DatasourcesView.formatRules(defaultRules)}`}
+                    : defaultRules
+                      ? `Cluster default: ${DatasourcesView.formatRules(defaultRules)}`
+                      : ''}
                 </TableClickableCell>
               );
             },
           },
           {
             Header: ACTION_COLUMN_LABEL,
-            show: visibleColumns.shown(ACTION_COLUMN_LABEL),
             accessor: 'datasource',
             id: ACTION_COLUMN_ID,
             width: ACTION_COLUMN_WIDTH,
             filterable: false,
+            sortable: false,
             Cell: ({ value: datasource, original }) => {
-              const { unused, rules, compactionConfig } = original as Datasource;
+              const { unused, rules, compaction } = original;
               const datasourceActions = this.getDatasourceActions(
                 datasource,
                 unused,
                 rules,
-                compactionConfig,
+                compaction,
               );
               return (
                 <ActionCell
                   onDetail={() => {
                     this.onDetail(original);
                   }}
+                  disableDetail={unused}
                   actions={datasourceActions}
+                  menuTitle={datasource}
                 />
               );
             },
@@ -1462,8 +1730,8 @@ ORDER BY 1`;
     );
   }
 
-  render(): JSX.Element {
-    const { capabilities } = this.props;
+  render() {
+    const { capabilities, filters, goToView } = this.props;
     const {
       showUnused,
       visibleColumns,
@@ -1473,16 +1741,10 @@ ORDER BY 1`;
     } = this.state;
 
     return (
-      <div
-        className={classNames('datasources-view app-view', {
-          'show-segment-timeline': showSegmentTimeline,
-        })}
-      >
+      <div className="datasources-view app-view">
         <ViewControlBar label="Datasources">
           <RefreshButton
-            onRefresh={auto => {
-              this.refresh(auto);
-            }}
+            onRefresh={this.refresh}
             localStorageKey={LocalStorageKeys.DATASOURCES_REFRESH_RATE}
           />
           {this.renderBulkDatasourceActions()}
@@ -1493,27 +1755,85 @@ ORDER BY 1`;
             disabled={!capabilities.hasCoordinatorAccess()}
           />
           <Switch
-            checked={showSegmentTimeline}
+            checked={Boolean(showSegmentTimeline)}
             label="Show segment timeline"
-            onChange={() => this.setState({ showSegmentTimeline: !showSegmentTimeline })}
+            onChange={() =>
+              this.setState({
+                showSegmentTimeline: showSegmentTimeline
+                  ? undefined
+                  : {
+                      capabilities,
+                      datasource: findMap(filters.toArray(), filter =>
+                        filter.key === 'datasource' &&
+                        filter.mode === '=' &&
+                        filter.values.length === 1
+                          ? filter.values[0]
+                          : undefined,
+                      ),
+                    },
+              })
+            }
             disabled={!capabilities.hasSqlOrCoordinatorAccess()}
           />
           <TableColumnSelector
-            columns={tableColumns[capabilities.getMode()]}
+            columns={TABLE_COLUMNS_BY_MODE[capabilities.getMode()]}
             onChange={column =>
               this.setState(prevState => ({
                 visibleColumns: prevState.visibleColumns.toggle(column),
               }))
             }
-            onClose={added => {
-              if (!added) return;
-              this.fetchDatasourceData();
-            }}
+            onClose={this.fetchData}
             tableColumnsHidden={visibleColumns.getHiddenColumns()}
           />
         </ViewControlBar>
-        {showSegmentTimeline && <SegmentTimeline capabilities={capabilities} />}
-        {this.renderDatasourcesTable()}
+        <SplitterLayout
+          className="timeline-datasources-splitter"
+          vertical
+          percentage
+          secondaryInitialSize={35}
+          primaryIndex={1}
+          primaryMinSize={20}
+          secondaryMinSize={10}
+        >
+          {showSegmentTimeline && (
+            <SegmentTimeline
+              capabilities={showSegmentTimeline.capabilities}
+              datasource={showSegmentTimeline.datasource}
+              getIntervalActionButton={(start, end, datasource, realtime) => {
+                return (
+                  <Button
+                    text="Open in segments view"
+                    size="small"
+                    endIcon={IconNames.ARROW_TOP_RIGHT}
+                    onClick={() => {
+                      let filters = TableFilters.empty();
+                      if (datasource) {
+                        filters = filters.addOrUpdate(
+                          new TableFilter('datasource', '=', [datasource]),
+                        );
+                      }
+                      if (realtime !== undefined) {
+                        filters = filters.addOrUpdate(
+                          new TableFilter('is_realtime', '=', String(realtime ? 1 : 0)),
+                        );
+                      }
+                      if (start && end) {
+                        filters = filters.addOrUpdate(
+                          new TableFilter('start', '>=', start.toISOString()),
+                        );
+                        filters = filters.addOrUpdate(
+                          new TableFilter('end', '<=', end.toISOString()),
+                        );
+                      }
+                      goToView('segments', filters);
+                    }}
+                  />
+                );
+              }}
+            />
+          )}
+          {this.renderDatasourcesTable()}
+        </SplitterLayout>
         {datasourceTableActionDialogId && (
           <DatasourceTableActionDialog
             datasource={datasourceTableActionDialogId}
@@ -1526,7 +1846,7 @@ ORDER BY 1`;
         {this.renderUseUnuseActionByInterval()}
         {this.renderKillAction()}
         {this.renderRetentionDialog()}
-        {this.renderCompactionDialog()}
+        {this.renderCompactionConfigDialog()}
         {this.renderForceCompactAction()}
       </div>
     );

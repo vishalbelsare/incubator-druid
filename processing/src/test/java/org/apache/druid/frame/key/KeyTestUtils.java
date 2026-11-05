@@ -24,19 +24,18 @@ import org.apache.datasketches.memory.WritableMemory;
 import org.apache.druid.frame.Frame;
 import org.apache.druid.frame.FrameType;
 import org.apache.druid.frame.allocation.HeapMemoryAllocator;
+import org.apache.druid.frame.allocation.SingleMemoryAllocatorFactory;
 import org.apache.druid.frame.write.FrameWriter;
 import org.apache.druid.frame.write.FrameWriterFactory;
 import org.apache.druid.frame.write.FrameWriters;
 import org.apache.druid.frame.write.RowBasedFrameWriter;
 import org.apache.druid.segment.ColumnInspector;
 import org.apache.druid.segment.RowBasedColumnSelectorFactory;
-import org.apache.druid.segment.column.ColumnCapabilities;
 import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.column.RowSignature;
 
 import java.util.Collections;
 import java.util.List;
-import java.util.Optional;
 
 public class KeyTestUtils
 {
@@ -49,17 +48,17 @@ public class KeyTestUtils
    * Create a signature matching {@code sortColumns}, using types from {@code inspector}.
    */
   public static RowSignature createKeySignature(
-      final List<SortColumn> sortColumns,
+      final List<KeyColumn> keyColumns,
       final ColumnInspector inspector
   )
   {
     final RowSignature.Builder builder = RowSignature.builder();
 
-    for (final SortColumn sortColumn : sortColumns) {
-      final ColumnCapabilities capabilities = inspector.getColumnCapabilities(sortColumn.columnName());
-      final ColumnType columnType =
-          Optional.ofNullable(capabilities).map(ColumnCapabilities::toColumnType).orElse(null);
-      builder.add(sortColumn.columnName(), columnType);
+    for (final KeyColumn keyColumn : keyColumns) {
+      builder.add(
+          keyColumn.columnName(),
+          ColumnType.fromCapabilities(inspector.getColumnCapabilities(keyColumn.columnName()))
+      );
     }
 
     return builder.build();
@@ -73,6 +72,7 @@ public class KeyTestUtils
    */
   public static RowKey createKey(
       final RowSignature keySignature,
+      final FrameType frameType,
       final Object... objects
   )
   {
@@ -88,15 +88,15 @@ public class KeyTestUtils
         },
         () -> objects,
         keySignature,
-        true,
-        false
+        true
     );
 
     final FrameWriterFactory writerFactory = FrameWriters.makeFrameWriterFactory(
-        FrameType.ROW_BASED,
-        HeapMemoryAllocator.unlimited(),
+        frameType,
+        new SingleMemoryAllocatorFactory(HeapMemoryAllocator.unlimited()),
         keySignature,
-        Collections.emptyList()
+        Collections.emptyList(),
+        false
     );
 
     try (final FrameWriter writer = writerFactory.newFrameWriter(columnSelectorFactory)) {

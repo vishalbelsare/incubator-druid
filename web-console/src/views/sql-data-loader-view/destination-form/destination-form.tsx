@@ -26,11 +26,10 @@ import {
   RadioGroup,
 } from '@blueprintjs/core';
 import { IconNames } from '@blueprintjs/icons';
-import { Tooltip2 } from '@blueprintjs/popover2';
 import classNames from 'classnames';
 import React, { useState } from 'react';
 
-import { DestinationInfo, DestinationMode } from '../../../druid-models';
+import type { DestinationInfo, DestinationMode } from '../../../druid-models';
 
 import './destination-form.scss';
 
@@ -88,9 +87,12 @@ export const DestinationForm = React.memo(function DestinationForm(props: Destin
             placeholder="Choose a name"
             rightElement={
               existingTables.includes(table) ? (
-                <Tooltip2 content="Table name already exists">
-                  <Button icon={IconNames.DELETE} intent={Intent.DANGER} minimal />
-                </Tooltip2>
+                <Button
+                  icon={IconNames.DELETE}
+                  intent={Intent.DANGER}
+                  variant="minimal"
+                  data-tooltip="Table name already exists"
+                />
               ) : undefined
             }
           />

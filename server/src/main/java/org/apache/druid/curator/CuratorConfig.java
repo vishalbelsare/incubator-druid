@@ -21,10 +21,9 @@ package org.apache.druid.curator;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.base.Preconditions;
+import jakarta.validation.constraints.Min;
 import org.apache.druid.metadata.DefaultPasswordProvider;
 import org.apache.druid.metadata.PasswordProvider;
-
-import javax.validation.constraints.Min;
 
 public class CuratorConfig
 {
@@ -57,6 +56,14 @@ public class CuratorConfig
 
   @JsonProperty("authScheme")
   private String authScheme = "digest";
+
+  // Configures the maximum number of retries for attempting connection to Zookeeper.
+  // Smaller retry counts helps nodes to fail fast in case of ZK connection loss.
+  @JsonProperty("maxZkRetries")
+  private int maxZkRetries = 29;
+
+  @JsonProperty("pathChildrenCacheStrategy")
+  private boolean pathChildrenCacheStrategy = true;
 
   public static CuratorConfig create(String hosts)
   {
@@ -130,5 +137,15 @@ public class CuratorConfig
   public String getAuthScheme()
   {
     return authScheme;
+  }
+
+  public int getMaxZkRetries()
+  {
+    return maxZkRetries;
+  }
+
+  public boolean getPathChildrenCacheStrategy()
+  {
+    return pathChildrenCacheStrategy;
   }
 }

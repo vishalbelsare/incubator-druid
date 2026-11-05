@@ -19,23 +19,27 @@
 
 package org.apache.druid.frame.segment;
 
-import org.apache.druid.java.util.common.DateTimes;
+import org.apache.druid.frame.segment.columnar.ColumnarFrameCursorFactory;
+import org.apache.druid.frame.segment.row.RowFrameCursorFactory;
 import org.apache.druid.query.BaseQuery;
 import org.apache.druid.segment.ColumnSelectorFactory;
 import org.apache.druid.segment.Cursor;
-import org.apache.druid.segment.data.Offset;
-import org.joda.time.DateTime;
+import org.apache.druid.segment.SimpleSettableOffset;
 
 /**
- * A simple {@link Cursor} that increments an offset.
+ * An implementation of {@link Cursor} used by {@link RowFrameCursorFactory}
+ * and {@link ColumnarFrameCursorFactory}.
+ *
+ * Adds the methods {@link #getCurrentRow()} and {@link #setCurrentRow(int)} so the cursor can be moved to
+ * particular rows.
  */
 public class FrameCursor implements Cursor
 {
-  private final Offset offset;
+  private final SimpleSettableOffset offset;
   private final ColumnSelectorFactory columnSelectorFactory;
 
   public FrameCursor(
-      Offset offset,
+      SimpleSettableOffset offset,
       ColumnSelectorFactory columnSelectorFactory
   )
   {
@@ -47,12 +51,6 @@ public class FrameCursor implements Cursor
   public ColumnSelectorFactory getColumnSelectorFactory()
   {
     return columnSelectorFactory;
-  }
-
-  @Override
-  public DateTime getTime()
-  {
-    return DateTimes.MIN;
   }
 
   @Override
@@ -84,5 +82,21 @@ public class FrameCursor implements Cursor
   public void reset()
   {
     offset.reset();
+  }
+
+  /**
+   * Returns the current row number.
+   */
+  public int getCurrentRow()
+  {
+    return offset.getOffset();
+  }
+
+  /**
+   * Moves this cursor to a particular row number.
+   */
+  public void setCurrentRow(final int rowNumber)
+  {
+    offset.setCurrentOffset(rowNumber);
   }
 }

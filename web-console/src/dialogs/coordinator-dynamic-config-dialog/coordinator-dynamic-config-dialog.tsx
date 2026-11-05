@@ -20,20 +20,17 @@ import { Intent } from '@blueprintjs/core';
 import { IconNames } from '@blueprintjs/icons';
 import React, { useState } from 'react';
 
-import {
-  AutoForm,
-  ExternalLink,
-  FormJsonSelector,
-  FormJsonTabs,
-  JsonInput,
-  Loader,
-} from '../../components';
-import { COORDINATOR_DYNAMIC_CONFIG_FIELDS, CoordinatorDynamicConfig } from '../../druid-models';
+import type { FormJsonTabs } from '../../components';
+import { AutoForm, ExternalLink, FormJsonSelector, JsonInput, Loader } from '../../components';
+import type { CoordinatorDynamicConfig } from '../../druid-models';
+import { COORDINATOR_DYNAMIC_CONFIG_FIELDS } from '../../druid-models';
 import { useQueryManager } from '../../hooks';
 import { getLink } from '../../links';
 import { Api, AppToaster } from '../../singletons';
-import { getDruidErrorMessage } from '../../utils';
+import { getApiArray, getDruidErrorMessage } from '../../utils';
 import { SnitchDialog } from '..';
+
+import { COORDINATOR_DYNAMIC_CONFIG_COMPLETIONS } from './coordinator-dynamic-config-completions';
 
 import './coordinator-dynamic-config-dialog.scss';
 
@@ -51,17 +48,16 @@ export const CoordinatorDynamicConfigDialog = React.memo(function CoordinatorDyn
 
   const [historyRecordsState] = useQueryManager<null, any[]>({
     initQuery: null,
-    processQuery: async () => {
-      const historyResp = await Api.instance.get(`/druid/coordinator/v1/config/history?count=100`);
-      return historyResp.data;
+    processQuery: async (_, signal) => {
+      return await getApiArray(`/druid/coordinator/v1/config/history?count=100`, signal);
     },
   });
 
   useQueryManager<null, Record<string, any>>({
     initQuery: null,
-    processQuery: async () => {
+    processQuery: async (_, signal) => {
       try {
-        const configResp = await Api.instance.get('/druid/coordinator/v1/config');
+        const configResp = await Api.instance.get('/druid/coordinator/v1/config', { signal });
         setDynamicConfig(configResp.data || {});
       } catch (e) {
         AppToaster.show({
@@ -102,7 +98,7 @@ export const CoordinatorDynamicConfigDialog = React.memo(function CoordinatorDyn
     <SnitchDialog
       className="coordinator-dynamic-config-dialog"
       saveDisabled={Boolean(jsonError)}
-      onSave={saveConfig}
+      onSave={comment => void saveConfig(comment)}
       onClose={onClose}
       title="Coordinator dynamic config"
       historyRecords={historyRecordsState.data}
@@ -112,14 +108,18 @@ export const CoordinatorDynamicConfigDialog = React.memo(function CoordinatorDyn
           <p>
             Edit the coordinator dynamic configuration on the fly. For more information please refer
             to the{' '}
-            <ExternalLink
-              href={`${getLink('DOCS')}/configuration/index.html#dynamic-configuration`}
-            >
+            <ExternalLink href={`${getLink('DOCS')}/configuration/#dynamic-configuration`}>
               documentation
             </ExternalLink>
             .
           </p>
-          <FormJsonSelector tab={currentTab} onChange={setCurrentTab} />
+          <FormJsonSelector
+            tab={currentTab}
+            onChange={t => {
+              setJsonError(undefined);
+              setCurrentTab(t);
+            }}
+          />
           {currentTab === 'form' ? (
             <AutoForm
               fields={COORDINATOR_DYNAMIC_CONFIG_FIELDS}
@@ -130,11 +130,9 @@ export const CoordinatorDynamicConfigDialog = React.memo(function CoordinatorDyn
             <JsonInput
               value={dynamicConfig}
               height="50vh"
-              onChange={v => {
-                setDynamicConfig(v);
-                setJsonError(undefined);
-              }}
-              onError={setJsonError}
+              onChange={setDynamicConfig}
+              setError={setJsonError}
+              jsonCompletions={COORDINATOR_DYNAMIC_CONFIG_COMPLETIONS}
             />
           )}
         </>

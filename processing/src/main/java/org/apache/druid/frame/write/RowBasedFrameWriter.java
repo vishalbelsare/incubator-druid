@@ -22,16 +22,18 @@ package org.apache.druid.frame.write;
 import com.google.common.primitives.Ints;
 import org.apache.datasketches.memory.Memory;
 import org.apache.datasketches.memory.WritableMemory;
+import org.apache.druid.error.DruidException;
 import org.apache.druid.frame.Frame;
 import org.apache.druid.frame.FrameType;
 import org.apache.druid.frame.allocation.AppendableMemory;
 import org.apache.druid.frame.allocation.MemoryRange;
 import org.apache.druid.frame.field.FieldWriter;
-import org.apache.druid.frame.key.SortColumn;
+import org.apache.druid.frame.key.KeyColumn;
 import org.apache.druid.frame.read.FrameReader;
 import org.apache.druid.java.util.common.IAE;
 import org.apache.druid.java.util.common.ISE;
 import org.apache.druid.java.util.common.io.Closer;
+import org.apache.druid.java.util.common.parsers.ParseException;
 import org.apache.druid.segment.column.RowSignature;
 import org.apache.druid.utils.CloseableUtils;
 
@@ -41,7 +43,7 @@ import java.util.Set;
 import java.util.function.Supplier;
 
 /**
- * Write row-based frames: type {@link FrameType#ROW_BASED}.
+ * Write row-based frames, where {@link FrameType#isRowBased()}.
  *
  * Row-based frames have two regions: an offset region and data region.
  *
@@ -61,8 +63,9 @@ public class RowBasedFrameWriter implements FrameWriter
    */
   static final int BASE_DATA_ALLOCATION_SIZE = 1 << 13; // 8 KB
 
+  private final FrameType frameType;
   private final RowSignature signature;
-  private final List<SortColumn> sortColumns;
+  private final List<KeyColumn> sortColumns;
   private final List<FieldWriter> fieldWriters;
   private final Supplier<MemoryRange<Memory>> rowMemorySupplier;
   @Nullable // Null if frame will not need permutation
@@ -73,8 +76,9 @@ public class RowBasedFrameWriter implements FrameWriter
   private boolean written = false;
 
   public RowBasedFrameWriter(
+      final FrameType frameType,
       final RowSignature signature,
-      final List<SortColumn> sortColumns,
+      final List<KeyColumn> sortColumns,
       final List<FieldWriter> fieldWriters,
       @Nullable final Supplier<MemoryRange<Memory>> rowMemorySupplier,
       @Nullable final AppendableMemory rowOrderMemory,
@@ -82,6 +86,7 @@ public class RowBasedFrameWriter implements FrameWriter
       final AppendableMemory dataMemory
   )
   {
+    this.frameType = frameType;
     this.signature = signature;
     this.sortColumns = sortColumns;
     this.rowMemorySupplier = rowMemorySupplier;
@@ -165,7 +170,7 @@ public class RowBasedFrameWriter implements FrameWriter
     currentPosition += FrameWriterUtils.writeFrameHeader(
         memory,
         startPosition,
-        FrameType.ROW_BASED,
+        frameType,
         totalSize,
         numRows,
         NUM_REGIONS,
@@ -286,20 +291,48 @@ public class RowBasedFrameWriter implements FrameWriter
       final long writeResult;
 
       // May throw InvalidNullByteException; allow it to propagate upwards.
-      writeResult = fieldWriter.writeTo(
-          dataCursor.memory(),
-          dataCursor.start() + bytesWritten,
-          remainingInBlock - bytesWritten
-      );
+      try {
+        writeResult = fieldWriter.writeTo(
+            dataCursor.memory(),
+            dataCursor.start() + bytesWritten,
+            remainingInBlock - bytesWritten
+        );
+      }
+      catch (InvalidNullByteException inbe) {
+        throw InvalidNullByteException.builder(inbe)
+                                      .column(signature.getColumnName(i))
+                                      .build();
+      }
+      catch (DruidException | ParseException e) {
+        throw e;
+      }
+      catch (Exception e) {
+        throw InvalidFieldException.builder().column(signature.getColumnName(i))
+                                   .errorMsg(e.getMessage())
+                                   .cause(e)
+                                   .build();
+      }
 
       if (writeResult < 0) {
         // Reset to beginning of loop.
         i = -1;
 
+        final int priorAllocation = BASE_DATA_ALLOCATION_SIZE * reserveMultiple;
+
         // Try again with a bigger allocation.
         reserveMultiple *= 2;
 
-        if (!dataMemory.reserveAdditional(Ints.checkedCast((long) BASE_DATA_ALLOCATION_SIZE * reserveMultiple))) {
+        final int nextAllocation = Math.min(
+            dataMemory.availableToReserve(),
+            Ints.checkedCast((long) BASE_DATA_ALLOCATION_SIZE * reserveMultiple)
+        );
+
+        if (nextAllocation > priorAllocation) {
+          if (!dataMemory.reserveAdditional(nextAllocation)) {
+            // Shouldn't see this unless availableToReserve lied to us.
+            throw DruidException.defensive("Unexpected failure of dataMemory.reserveAdditional");
+          }
+        } else {
           return false;
         }
 

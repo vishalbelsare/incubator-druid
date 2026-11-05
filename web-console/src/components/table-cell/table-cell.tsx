@@ -17,11 +17,16 @@
  */
 
 import { IconNames } from '@blueprintjs/icons';
+import { Timezone } from 'chronoshift';
 import * as JSONBig from 'json-bigint-native';
 import React, { useState } from 'react';
 
 import { ShowValueDialog } from '../../dialogs/show-value-dialog/show-value-dialog';
-import { isSimpleArray } from '../../utils';
+import {
+  isSimpleArray,
+  prettyFormatIsoDateWithMsIfNeeded,
+  toIsoStringInTimezone,
+} from '../../utils';
 import { ActionIcon } from '../action-icon/action-icon';
 
 import './table-cell.scss';
@@ -39,8 +44,8 @@ function shortenString(str: string): ShortParts {
   // Print something like:
   // BAAAArAAEiQKpDAEAACwZCBAGSBgiSEAAAAQpAIDwAg...23 omitted...gwiRoQBJIC
   const omit = str.length - (MAX_CHARS_TO_SHOW - 17);
-  const prefix = str.substr(0, str.length - (omit + 10));
-  const suffix = str.substr(str.length - 10);
+  const prefix = str.slice(0, str.length - (omit + 10));
+  const suffix = str.slice(str.length - 10);
   return {
     prefix,
     omitted: `...${omit} omitted...`,
@@ -51,19 +56,20 @@ function shortenString(str: string): ShortParts {
 export interface TableCellProps {
   value: any;
   unlimited?: boolean;
+  timezone?: Timezone;
 }
 
 export const TableCell = React.memo(function TableCell(props: TableCellProps) {
-  const { value, unlimited } = props;
+  const { value, unlimited, timezone = Timezone.UTC } = props;
   const [showValue, setShowValue] = useState<string | undefined>();
 
-  function renderShowValueDialog(): JSX.Element | undefined {
+  function renderShowValueDialog() {
     if (!showValue) return;
 
     return <ShowValueDialog onClose={() => setShowValue(undefined)} str={showValue} />;
   }
 
-  function renderTruncated(str: string): JSX.Element {
+  function renderTruncated(str: string) {
     if (str.length <= MAX_CHARS_TO_SHOW) {
       return <div className="table-cell plain">{str}</div>;
     }
@@ -73,7 +79,7 @@ export const TableCell = React.memo(function TableCell(props: TableCellProps) {
         <div className="table-cell plain">
           {str.length < ABSOLUTE_MAX_CHARS_TO_SHOW
             ? str
-            : `${str.substr(0, ABSOLUTE_MAX_CHARS_TO_SHOW)}...`}
+            : `${str.slice(0, ABSOLUTE_MAX_CHARS_TO_SHOW)}...`}
         </div>
       );
     }
@@ -90,22 +96,24 @@ export const TableCell = React.memo(function TableCell(props: TableCellProps) {
     );
   }
 
-  if (value !== '' && value != null) {
-    if (value instanceof Date) {
-      const dateValue = value.valueOf();
-      return (
-        <div className="table-cell timestamp" title={String(value.valueOf())}>
-          {isNaN(dateValue) ? 'Unusable date' : value.toISOString()}
-        </div>
-      );
-    } else if (isSimpleArray(value)) {
-      return renderTruncated(`[${value.join(', ')}]`);
-    } else if (typeof value === 'object') {
-      return renderTruncated(JSONBig.stringify(value));
-    } else {
-      return renderTruncated(String(value));
-    }
-  } else {
+  if (value === '') {
+    return <div className="table-cell empty">empty</div>;
+  } else if (value == null) {
     return <div className="table-cell null">null</div>;
+  } else if (value instanceof Date) {
+    const dateValue = value.valueOf();
+    return (
+      <div className="table-cell timestamp" data-tooltip={String(dateValue)}>
+        {isNaN(dateValue)
+          ? 'Invalid date'
+          : prettyFormatIsoDateWithMsIfNeeded(toIsoStringInTimezone(value, timezone))}
+      </div>
+    );
+  } else if (isSimpleArray(value)) {
+    return renderTruncated(`[${value.join(', ')}]`);
+  } else if (typeof value === 'object') {
+    return renderTruncated(JSONBig.stringify(value));
+  } else {
+    return renderTruncated(String(value));
   }
 });

@@ -23,6 +23,7 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.base.Preconditions;
+import org.apache.druid.frame.FrameType;
 import org.apache.druid.java.util.common.IAE;
 import org.apache.druid.java.util.common.guava.Comparators;
 import org.apache.druid.segment.ColumnInspector;
@@ -43,12 +44,13 @@ import java.util.Objects;
  */
 public class ClusterBy
 {
-  private final List<SortColumn> columns;
+  private final List<KeyColumn> columns;
   private final int bucketByCount;
+  private final boolean sortable;
 
   @JsonCreator
   public ClusterBy(
-      @JsonProperty("columns") List<SortColumn> columns,
+      @JsonProperty("columns") List<KeyColumn> columns,
       @JsonProperty("bucketByCount") int bucketByCount
   )
   {
@@ -58,6 +60,21 @@ public class ClusterBy
     if (bucketByCount < 0 || bucketByCount > columns.size()) {
       throw new IAE("Invalid bucketByCount [%d]", bucketByCount);
     }
+
+    // Key must be 100% sortable or 100% nonsortable. If empty, call it sortable.
+    boolean sortable = true;
+
+    for (int i = 0; i < columns.size(); i++) {
+      final KeyColumn column = columns.get(i);
+
+      if (i == 0) {
+        sortable = column.order().sortable();
+      } else if (sortable != column.order().sortable()) {
+        throw new IAE("Cannot mix sortable and unsortable key columns");
+      }
+    }
+
+    this.sortable = sortable;
   }
 
   /**
@@ -72,7 +89,7 @@ public class ClusterBy
    * The columns that comprise this key, in order.
    */
   @JsonProperty
-  public List<SortColumn> getColumns()
+  public List<KeyColumn> getColumns()
   {
     return columns;
   }
@@ -86,7 +103,7 @@ public class ClusterBy
    *
    * Will always be less than, or equal to, the size of {@link #getColumns()}.
    *
-   * Not relevant when a ClusterBy instance is used as an ordering key rather than a partitioning key.
+   * Only relevant when a ClusterBy instance is used as a partitioning key.
    */
   @JsonProperty
   @JsonInclude(JsonInclude.Include.NON_DEFAULT)
@@ -96,17 +113,33 @@ public class ClusterBy
   }
 
   /**
+   * Whether this key is empty.
+   */
+  public boolean isEmpty()
+  {
+    return columns.isEmpty();
+  }
+
+  /**
+   * Whether this key is sortable. Empty keys (with no columns) are considered sortable.
+   */
+  public boolean sortable()
+  {
+    return sortable;
+  }
+
+  /**
    * Create a reader for keys for this instance.
    *
    * The provided {@link ColumnInspector} is used to determine the types of fields in the keys. The provided signature
    * does not have to exactly match the sortColumns: it merely has to contain them all.
    */
-  public RowKeyReader keyReader(final ColumnInspector inspector)
+  public RowKeyReader keyReader(final ColumnInspector inspector, final FrameType frameType)
   {
     final RowSignature.Builder newSignature = RowSignature.builder();
 
-    for (final SortColumn sortColumn : columns) {
-      final String columnName = sortColumn.columnName();
+    for (final KeyColumn keyColumn : columns) {
+      final String columnName = keyColumn.columnName();
       final ColumnCapabilities capabilities = inspector.getColumnCapabilities(columnName);
       final ColumnType columnType =
           Preconditions.checkNotNull(capabilities, "Type for column [%s]", columnName).toColumnType();
@@ -114,35 +147,35 @@ public class ClusterBy
       newSignature.add(columnName, columnType);
     }
 
-    return RowKeyReader.create(newSignature.build());
+    return RowKeyReader.create(newSignature.build(), frameType);
   }
 
   /**
    * Comparator that compares keys for this instance using the given signature.
    */
-  public Comparator<RowKey> keyComparator()
+  public Comparator<RowKey> keyComparator(RowSignature rowSignature)
   {
-    return RowKeyComparator.create(columns);
+    return RowKeyComparator.create(columns, rowSignature);
   }
 
   /**
    * Comparator that compares byte arrays of keys for this instance using the given signature directly.
    */
-  public Comparator<byte[]> byteKeyComparator()
+  public Comparator<byte[]> byteKeyComparator(RowSignature rowSignature)
   {
-    return ByteRowKeyComparator.create(columns);
+    return ByteRowKeyComparator.create(columns, rowSignature);
   }
 
   /**
    * Comparator that compares bucket keys for this instance. Bucket keys are retrieved by calling
    * {@link RowKeyReader#trim(RowKey, int)} with {@link #getBucketByCount()}.
    */
-  public Comparator<RowKey> bucketComparator()
+  public Comparator<RowKey> bucketComparator(final RowSignature rowSignature)
   {
     if (bucketByCount == 0) {
       return Comparators.alwaysEqual();
     } else {
-      return RowKeyComparator.create(columns.subList(0, bucketByCount));
+      return RowKeyComparator.create(columns.subList(0, bucketByCount), rowSignature);
     }
   }
 

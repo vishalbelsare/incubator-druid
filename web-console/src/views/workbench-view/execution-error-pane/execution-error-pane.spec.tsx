@@ -16,8 +16,7 @@
  * limitations under the License.
  */
 
-import { shallow } from 'enzyme';
-import React from 'react';
+import { render } from '@testing-library/react';
 
 import { EXECUTION_INGEST_ERROR } from '../../../druid-models/execution/execution-ingest-error.mock';
 
@@ -25,8 +24,8 @@ import { ExecutionErrorPane } from './execution-error-pane';
 
 describe('ExecutionErrorPane', () => {
   it('matches snapshot', () => {
-    const queryError = shallow(<ExecutionErrorPane execution={EXECUTION_INGEST_ERROR} />);
+    const { container } = render(<ExecutionErrorPane execution={EXECUTION_INGEST_ERROR} />);
 
-    expect(queryError).toMatchSnapshot();
+    expect(container.firstChild).toMatchSnapshot();
   });
 });

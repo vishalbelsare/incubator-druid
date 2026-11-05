@@ -16,26 +16,25 @@
  * limitations under the License.
  */
 
-import { shallow } from 'enzyme';
-import React from 'react';
+import { render } from '@testing-library/react';
 
-import { Capabilities } from '../../utils';
+import { Capabilities } from '../../helpers';
 
 import { HomeView } from './home-view';
 
 describe('HomeView', () => {
   it('matches snapshot (full)', () => {
-    const homeView = shallow(<HomeView capabilities={Capabilities.FULL} />);
-    expect(homeView).toMatchSnapshot();
+    const { container } = render(<HomeView capabilities={Capabilities.FULL} />);
+    expect(container.firstChild).toMatchSnapshot();
   });
 
   it('matches snapshot (coordinator)', () => {
-    const homeView = shallow(<HomeView capabilities={Capabilities.COORDINATOR} />);
-    expect(homeView).toMatchSnapshot();
+    const { container } = render(<HomeView capabilities={Capabilities.COORDINATOR} />);
+    expect(container.firstChild).toMatchSnapshot();
   });
 
   it('matches snapshot (overlord)', () => {
-    const homeView = shallow(<HomeView capabilities={Capabilities.OVERLORD} />);
-    expect(homeView).toMatchSnapshot();
+    const { container } = render(<HomeView capabilities={Capabilities.OVERLORD} />);
+    expect(container.firstChild).toMatchSnapshot();
   });
 });

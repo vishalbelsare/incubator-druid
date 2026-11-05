@@ -1,0 +1,3084 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`CompactionConfigDialog matches snapshot with compactionConfig (dynamic partitionsSpec) 1`] = `
+<div
+  class="bp6-portal"
+>
+  <div
+    aria-live="polite"
+    class="bp6-overlay bp6-overlay-open bp6-overlay-scroll-container"
+  >
+    <div
+      class="bp6-overlay-start-focus-trap bp6-overlay-appear bp6-overlay-appear-active"
+      tabindex="0"
+    />
+    <div
+      class="bp6-overlay-backdrop bp6-overlay-appear bp6-overlay-appear-active"
+    />
+    <div
+      class="bp6-dialog-container bp6-overlay-content bp6-overlay-appear bp6-overlay-appear-active"
+      tabindex="0"
+    >
+      <div
+        aria-labelledby="title-bp-dialog-1"
+        aria-modal="true"
+        class="bp6-dialog compaction-config-dialog"
+        role="dialog"
+      >
+        <div
+          class="bp6-dialog-header"
+        >
+          <h2
+            class="bp6-heading"
+            id="title-bp-dialog-1"
+          >
+            Compaction config: test1
+          </h2>
+          <button
+            aria-label="Close"
+            class="bp6-button bp6-minimal bp6-dialog-close-button"
+            type="button"
+          >
+            <span
+              aria-hidden="true"
+              class="bp6-icon bp6-icon-small-cross"
+            >
+              <svg
+                data-icon="small-cross"
+              />
+            </span>
+          </button>
+        </div>
+        <div
+          class="bp6-form-group form-json-selector"
+        >
+          <div
+            class="bp6-form-content"
+          >
+            <div
+              class="bp6-button-group bp6-fill"
+            >
+              <button
+                class="bp6-button bp6-active"
+                type="button"
+              >
+                <span
+                  class="bp6-button-text"
+                >
+                  Form
+                </span>
+              </button>
+              <button
+                class="bp6-button"
+                type="button"
+              >
+                <span
+                  class="bp6-button-text"
+                >
+                  JSON
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+        <div
+          class="content"
+        >
+          <div
+            class="auto-form"
+          >
+            <div
+              class="bp6-form-group form-group-with-info"
+            >
+              <label
+                class="bp6-label"
+              >
+                Skip offset from latest
+                 
+                <span
+                  class="bp6-text-muted"
+                >
+                  <span
+                    class="info-popover bp6-popover-target"
+                  >
+                    <span
+                      aria-expanded="false"
+                      aria-haspopup="menu"
+                      aria-hidden="true"
+                      class="bp6-icon bp6-icon-info-sign"
+                    >
+                      <svg
+                        data-icon="info-sign"
+                      />
+                    </span>
+                  </span>
+                </span>
+              </label>
+              <div
+                class="bp6-form-content"
+              >
+                <div
+                  class="formatted-input suggestible-input"
+                >
+                  <div
+                    class="bp6-input-group"
+                  >
+                    <input
+                      aria-disabled="false"
+                      class="bp6-input"
+                      placeholder=""
+                      style="padding-right: 0px;"
+                      type="text"
+                      value="P1D"
+                    />
+                    <span
+                      class="bp6-input-action"
+                    >
+                      <span
+                        class="bp6-popover-target"
+                      >
+                        <button
+                          aria-expanded="false"
+                          aria-haspopup="menu"
+                          class="bp6-button bp6-minimal"
+                          type="button"
+                        >
+                          <span
+                            aria-hidden="true"
+                            class="bp6-icon bp6-icon-caret-down"
+                          >
+                            <svg
+                              data-icon="caret-down"
+                            />
+                          </span>
+                        </button>
+                      </span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              class="bp6-form-group form-group-with-info"
+            >
+              <label
+                class="bp6-label"
+              >
+                Partitioning type
+                 
+                <span
+                  class="bp6-text-muted"
+                >
+                  <span
+                    class="info-popover bp6-popover-target"
+                  >
+                    <span
+                      aria-expanded="false"
+                      aria-haspopup="menu"
+                      aria-hidden="true"
+                      class="bp6-icon bp6-icon-info-sign"
+                    >
+                      <svg
+                        data-icon="info-sign"
+                      />
+                    </span>
+                  </span>
+                </span>
+              </label>
+              <div
+                class="bp6-form-content"
+              >
+                <div
+                  class="formatted-input suggestible-input"
+                >
+                  <div
+                    class="bp6-input-group"
+                  >
+                    <input
+                      aria-disabled="false"
+                      class="bp6-input"
+                      placeholder=""
+                      style="padding-right: 0px;"
+                      type="text"
+                      value="dynamic"
+                    />
+                    <span
+                      class="bp6-input-action"
+                    >
+                      <span
+                        class="bp6-popover-target"
+                      >
+                        <button
+                          aria-expanded="false"
+                          aria-haspopup="menu"
+                          class="bp6-button bp6-minimal"
+                          type="button"
+                        >
+                          <span
+                            aria-hidden="true"
+                            class="bp6-icon bp6-icon-caret-down"
+                          >
+                            <svg
+                              data-icon="caret-down"
+                            />
+                          </span>
+                        </button>
+                      </span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              class="bp6-form-group form-group-with-info"
+            >
+              <label
+                class="bp6-label"
+              >
+                Max rows per segment
+                 
+                <span
+                  class="bp6-text-muted"
+                >
+                  <span
+                    class="info-popover bp6-popover-target"
+                  >
+                    <span
+                      aria-expanded="false"
+                      aria-haspopup="menu"
+                      aria-hidden="true"
+                      class="bp6-icon bp6-icon-info-sign"
+                    >
+                      <svg
+                        data-icon="info-sign"
+                      />
+                    </span>
+                  </span>
+                </span>
+              </label>
+              <div
+                class="bp6-form-content"
+              >
+                <div
+                  class="bp6-control-group bp6-fill fancy-numeric-input bp6-numeric-input"
+                  role="group"
+                >
+                  <div
+                    class="bp6-input-group"
+                  >
+                    <input
+                      aria-valuemin="0"
+                      autocomplete="off"
+                      class="bp6-input"
+                      placeholder=""
+                      type="text"
+                      value="5000000"
+                    />
+                  </div>
+                  <div
+                    class="bp6-button-group bp6-vertical bp6-fixed"
+                  >
+                    <button
+                      aria-label="increment"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-up"
+                      >
+                        <svg
+                          data-icon="chevron-up"
+                        />
+                      </span>
+                    </button>
+                    <button
+                      aria-label="decrement"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-down"
+                      >
+                        <svg
+                          data-icon="chevron-down"
+                        />
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              class="bp6-form-group form-group-with-info"
+            >
+              <label
+                class="bp6-label"
+              >
+                Max total rows
+                 
+                <span
+                  class="bp6-text-muted"
+                >
+                  <span
+                    class="info-popover bp6-popover-target"
+                  >
+                    <span
+                      aria-expanded="false"
+                      aria-haspopup="menu"
+                      aria-hidden="true"
+                      class="bp6-icon bp6-icon-info-sign"
+                    >
+                      <svg
+                        data-icon="info-sign"
+                      />
+                    </span>
+                  </span>
+                </span>
+              </label>
+              <div
+                class="bp6-form-content"
+              >
+                <div
+                  class="bp6-control-group bp6-fill fancy-numeric-input bp6-numeric-input"
+                  role="group"
+                >
+                  <div
+                    class="bp6-input-group"
+                  >
+                    <input
+                      aria-valuemin="0"
+                      autocomplete="off"
+                      class="bp6-input"
+                      placeholder=""
+                      type="text"
+                      value="20000000"
+                    />
+                  </div>
+                  <div
+                    class="bp6-button-group bp6-vertical bp6-fixed"
+                  >
+                    <button
+                      aria-label="increment"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-up"
+                      >
+                        <svg
+                          data-icon="chevron-up"
+                        />
+                      </span>
+                    </button>
+                    <button
+                      aria-label="decrement"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-down"
+                      >
+                        <svg
+                          data-icon="chevron-down"
+                        />
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              class="bp6-form-group form-group-with-info"
+            >
+              <label
+                class="bp6-label"
+              >
+                Max num concurrent sub tasks
+                 
+                <span
+                  class="bp6-text-muted"
+                >
+                  <span
+                    class="info-popover bp6-popover-target"
+                  >
+                    <span
+                      aria-expanded="false"
+                      aria-haspopup="menu"
+                      aria-hidden="true"
+                      class="bp6-icon bp6-icon-info-sign"
+                    >
+                      <svg
+                        data-icon="info-sign"
+                      />
+                    </span>
+                  </span>
+                </span>
+              </label>
+              <div
+                class="bp6-form-content"
+              >
+                <div
+                  class="bp6-control-group bp6-fill fancy-numeric-input bp6-numeric-input"
+                  role="group"
+                >
+                  <div
+                    class="bp6-input-group"
+                  >
+                    <input
+                      aria-valuemin="1"
+                      autocomplete="off"
+                      class="bp6-input"
+                      placeholder=""
+                      type="text"
+                      value="1"
+                    />
+                  </div>
+                  <div
+                    class="bp6-button-group bp6-vertical bp6-fixed"
+                  >
+                    <button
+                      aria-label="increment"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-up"
+                      >
+                        <svg
+                          data-icon="chevron-up"
+                        />
+                      </span>
+                    </button>
+                    <button
+                      aria-label="decrement"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-down"
+                      >
+                        <svg
+                          data-icon="chevron-down"
+                        />
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              class="bp6-form-group form-group-with-info"
+            >
+              <label
+                class="bp6-label"
+              >
+                Max columns to merge
+                 
+                <span
+                  class="bp6-text-muted"
+                >
+                  <span
+                    class="info-popover bp6-popover-target"
+                  >
+                    <span
+                      aria-expanded="false"
+                      aria-haspopup="menu"
+                      aria-hidden="true"
+                      class="bp6-icon bp6-icon-info-sign"
+                    >
+                      <svg
+                        data-icon="info-sign"
+                      />
+                    </span>
+                  </span>
+                </span>
+              </label>
+              <div
+                class="bp6-form-content"
+              >
+                <div
+                  class="bp6-control-group bp6-fill fancy-numeric-input bp6-numeric-input"
+                  role="group"
+                >
+                  <div
+                    class="bp6-input-group"
+                  >
+                    <input
+                      aria-valuemin="-1"
+                      autocomplete="off"
+                      class="bp6-input"
+                      placeholder=""
+                      type="text"
+                      value="-1"
+                    />
+                  </div>
+                  <div
+                    class="bp6-button-group bp6-vertical bp6-fixed"
+                  >
+                    <button
+                      aria-label="increment"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-up"
+                      >
+                        <svg
+                          data-icon="chevron-up"
+                        />
+                      </span>
+                    </button>
+                    <button
+                      aria-label="decrement"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-down"
+                      >
+                        <svg
+                          data-icon="chevron-down"
+                        />
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              class="bp6-form-group"
+            >
+              <div
+                class="bp6-form-content"
+              >
+                <button
+                  class="bp6-button bp6-minimal"
+                  type="button"
+                >
+                  <span
+                    class="bp6-button-text"
+                  >
+                    Show more
+                  </span>
+                  <span
+                    aria-hidden="true"
+                    class="bp6-icon bp6-icon-chevron-down"
+                  >
+                    <svg
+                      data-icon="chevron-down"
+                    />
+                  </span>
+                </button>
+              </div>
+            </div>
+          </div>
+          <div
+            class="bp6-form-group form-group-with-info"
+          >
+            <div
+              class="bp6-form-content"
+            >
+              <label
+                class="bp6-control bp6-switch"
+              >
+                <input
+                  class="bp6-control-input"
+                  type="checkbox"
+                />
+                <span
+                  class="bp6-control-indicator"
+                />
+                Use concurrent locks
+              </label>
+              <span
+                class="info-popover bp6-popover-target"
+              >
+                <span
+                  aria-expanded="false"
+                  aria-haspopup="menu"
+                  aria-hidden="true"
+                  class="bp6-icon bp6-icon-info-sign"
+                >
+                  <svg
+                    data-icon="info-sign"
+                  />
+                </span>
+              </span>
+            </div>
+          </div>
+        </div>
+        <div
+          class="bp6-dialog-footer"
+        >
+          <div
+            class="bp6-dialog-footer-actions"
+          >
+            <button
+              class="bp6-button bp6-minimal history-button"
+              type="button"
+            >
+              <span
+                class="bp6-button-text"
+              >
+                History
+              </span>
+            </button>
+            <button
+              class="bp6-button bp6-intent-danger"
+              type="button"
+            >
+              <span
+                class="bp6-button-text"
+              >
+                Delete
+              </span>
+            </button>
+            <button
+              class="bp6-button"
+              type="button"
+            >
+              <span
+                class="bp6-button-text"
+              >
+                Close
+              </span>
+            </button>
+            <button
+              class="bp6-button bp6-intent-primary"
+              type="button"
+            >
+              <span
+                class="bp6-button-text"
+              >
+                Submit
+              </span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div
+      class="bp6-overlay-end-focus-trap bp6-overlay-appear bp6-overlay-appear-active"
+      tabindex="0"
+    />
+  </div>
+</div>
+`;
+
+exports[`CompactionConfigDialog matches snapshot with compactionConfig (hashed partitionsSpec) 1`] = `
+<div
+  class="bp6-portal"
+>
+  <div
+    aria-live="polite"
+    class="bp6-overlay bp6-overlay-open bp6-overlay-scroll-container"
+  >
+    <div
+      class="bp6-overlay-start-focus-trap bp6-overlay-appear bp6-overlay-appear-active"
+      tabindex="0"
+    />
+    <div
+      class="bp6-overlay-backdrop bp6-overlay-appear bp6-overlay-appear-active"
+    />
+    <div
+      class="bp6-dialog-container bp6-overlay-content bp6-overlay-appear bp6-overlay-appear-active"
+      tabindex="0"
+    >
+      <div
+        aria-labelledby="title-bp-dialog-2"
+        aria-modal="true"
+        class="bp6-dialog compaction-config-dialog"
+        role="dialog"
+      >
+        <div
+          class="bp6-dialog-header"
+        >
+          <h2
+            class="bp6-heading"
+            id="title-bp-dialog-2"
+          >
+            Compaction config: test1
+          </h2>
+          <button
+            aria-label="Close"
+            class="bp6-button bp6-minimal bp6-dialog-close-button"
+            type="button"
+          >
+            <span
+              aria-hidden="true"
+              class="bp6-icon bp6-icon-small-cross"
+            >
+              <svg
+                data-icon="small-cross"
+              />
+            </span>
+          </button>
+        </div>
+        <div
+          class="bp6-form-group form-json-selector"
+        >
+          <div
+            class="bp6-form-content"
+          >
+            <div
+              class="bp6-button-group bp6-fill"
+            >
+              <button
+                class="bp6-button bp6-active"
+                type="button"
+              >
+                <span
+                  class="bp6-button-text"
+                >
+                  Form
+                </span>
+              </button>
+              <button
+                class="bp6-button"
+                type="button"
+              >
+                <span
+                  class="bp6-button-text"
+                >
+                  JSON
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+        <div
+          class="content"
+        >
+          <div
+            class="auto-form"
+          >
+            <div
+              class="bp6-form-group form-group-with-info"
+            >
+              <label
+                class="bp6-label"
+              >
+                Skip offset from latest
+                 
+                <span
+                  class="bp6-text-muted"
+                >
+                  <span
+                    class="info-popover bp6-popover-target"
+                  >
+                    <span
+                      aria-expanded="false"
+                      aria-haspopup="menu"
+                      aria-hidden="true"
+                      class="bp6-icon bp6-icon-info-sign"
+                    >
+                      <svg
+                        data-icon="info-sign"
+                      />
+                    </span>
+                  </span>
+                </span>
+              </label>
+              <div
+                class="bp6-form-content"
+              >
+                <div
+                  class="formatted-input suggestible-input"
+                >
+                  <div
+                    class="bp6-input-group"
+                  >
+                    <input
+                      aria-disabled="false"
+                      class="bp6-input"
+                      placeholder=""
+                      style="padding-right: 0px;"
+                      type="text"
+                      value="P1D"
+                    />
+                    <span
+                      class="bp6-input-action"
+                    >
+                      <span
+                        class="bp6-popover-target"
+                      >
+                        <button
+                          aria-expanded="false"
+                          aria-haspopup="menu"
+                          class="bp6-button bp6-minimal"
+                          type="button"
+                        >
+                          <span
+                            aria-hidden="true"
+                            class="bp6-icon bp6-icon-caret-down"
+                          >
+                            <svg
+                              data-icon="caret-down"
+                            />
+                          </span>
+                        </button>
+                      </span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              class="bp6-form-group form-group-with-info"
+            >
+              <label
+                class="bp6-label"
+              >
+                Partitioning type
+                 
+                <span
+                  class="bp6-text-muted"
+                >
+                  <span
+                    class="info-popover bp6-popover-target"
+                  >
+                    <span
+                      aria-expanded="false"
+                      aria-haspopup="menu"
+                      aria-hidden="true"
+                      class="bp6-icon bp6-icon-info-sign"
+                    >
+                      <svg
+                        data-icon="info-sign"
+                      />
+                    </span>
+                  </span>
+                </span>
+              </label>
+              <div
+                class="bp6-form-content"
+              >
+                <div
+                  class="formatted-input suggestible-input"
+                >
+                  <div
+                    class="bp6-input-group"
+                  >
+                    <input
+                      aria-disabled="false"
+                      class="bp6-input"
+                      placeholder=""
+                      style="padding-right: 0px;"
+                      type="text"
+                      value="hashed"
+                    />
+                    <span
+                      class="bp6-input-action"
+                    >
+                      <span
+                        class="bp6-popover-target"
+                      >
+                        <button
+                          aria-expanded="false"
+                          aria-haspopup="menu"
+                          class="bp6-button bp6-minimal"
+                          type="button"
+                        >
+                          <span
+                            aria-hidden="true"
+                            class="bp6-icon bp6-icon-caret-down"
+                          >
+                            <svg
+                              data-icon="caret-down"
+                            />
+                          </span>
+                        </button>
+                      </span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              class="bp6-form-group form-group-with-info"
+            >
+              <label
+                class="bp6-label"
+              >
+                Target rows per segment
+                 
+                <span
+                  class="bp6-text-muted"
+                >
+                  <span
+                    class="info-popover bp6-popover-target"
+                  >
+                    <span
+                      aria-expanded="false"
+                      aria-haspopup="menu"
+                      aria-hidden="true"
+                      class="bp6-icon bp6-icon-info-sign"
+                    >
+                      <svg
+                        data-icon="info-sign"
+                      />
+                    </span>
+                  </span>
+                </span>
+              </label>
+              <div
+                class="bp6-form-content"
+              >
+                <div
+                  class="bp6-control-group bp6-fill fancy-numeric-input bp6-numeric-input"
+                  role="group"
+                >
+                  <div
+                    class="bp6-input-group"
+                  >
+                    <input
+                      aria-valuemin="0"
+                      autocomplete="off"
+                      class="bp6-input"
+                      placeholder="(defaults to 500000)"
+                      type="text"
+                      value=""
+                    />
+                  </div>
+                  <div
+                    class="bp6-button-group bp6-vertical bp6-fixed"
+                  >
+                    <button
+                      aria-label="increment"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-up"
+                      >
+                        <svg
+                          data-icon="chevron-up"
+                        />
+                      </span>
+                    </button>
+                    <button
+                      aria-label="decrement"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-down"
+                      >
+                        <svg
+                          data-icon="chevron-down"
+                        />
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              class="bp6-form-group form-group-with-info"
+            >
+              <label
+                class="bp6-label"
+              >
+                Max rows per segment
+                 
+                <span
+                  class="bp6-text-muted"
+                >
+                  <span
+                    class="info-popover bp6-popover-target"
+                  >
+                    <span
+                      aria-expanded="false"
+                      aria-haspopup="menu"
+                      aria-hidden="true"
+                      class="bp6-icon bp6-icon-info-sign"
+                    >
+                      <svg
+                        data-icon="info-sign"
+                      />
+                    </span>
+                  </span>
+                </span>
+              </label>
+              <div
+                class="bp6-form-content"
+              >
+                <div
+                  class="bp6-control-group bp6-fill fancy-numeric-input bp6-numeric-input"
+                  role="group"
+                >
+                  <div
+                    class="bp6-input-group"
+                  >
+                    <input
+                      aria-valuemin="0"
+                      autocomplete="off"
+                      class="bp6-input"
+                      placeholder=""
+                      type="text"
+                      value=""
+                    />
+                  </div>
+                  <div
+                    class="bp6-button-group bp6-vertical bp6-fixed"
+                  >
+                    <button
+                      aria-label="increment"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-up"
+                      >
+                        <svg
+                          data-icon="chevron-up"
+                        />
+                      </span>
+                    </button>
+                    <button
+                      aria-label="decrement"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-down"
+                      >
+                        <svg
+                          data-icon="chevron-down"
+                        />
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              class="bp6-form-group form-group-with-info"
+            >
+              <label
+                class="bp6-label"
+              >
+                Num shards
+                 
+                <span
+                  class="bp6-text-muted"
+                >
+                  <span
+                    class="info-popover bp6-popover-target"
+                  >
+                    <span
+                      aria-expanded="false"
+                      aria-haspopup="menu"
+                      aria-hidden="true"
+                      class="bp6-icon bp6-icon-info-sign"
+                    >
+                      <svg
+                        data-icon="info-sign"
+                      />
+                    </span>
+                  </span>
+                </span>
+              </label>
+              <div
+                class="bp6-form-content"
+              >
+                <div
+                  class="bp6-control-group bp6-fill fancy-numeric-input bp6-numeric-input"
+                  role="group"
+                >
+                  <div
+                    class="bp6-input-group"
+                  >
+                    <input
+                      aria-valuemin="0"
+                      autocomplete="off"
+                      class="bp6-input"
+                      placeholder=""
+                      type="text"
+                      value=""
+                    />
+                  </div>
+                  <div
+                    class="bp6-button-group bp6-vertical bp6-fixed"
+                  >
+                    <button
+                      aria-label="increment"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-up"
+                      >
+                        <svg
+                          data-icon="chevron-up"
+                        />
+                      </span>
+                    </button>
+                    <button
+                      aria-label="decrement"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-down"
+                      >
+                        <svg
+                          data-icon="chevron-down"
+                        />
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              class="bp6-form-group form-group-with-info"
+            >
+              <label
+                class="bp6-label"
+              >
+                Partition dimensions
+                 
+                <span
+                  class="bp6-text-muted"
+                >
+                  <span
+                    class="info-popover bp6-popover-target"
+                  >
+                    <span
+                      aria-expanded="false"
+                      aria-haspopup="menu"
+                      aria-hidden="true"
+                      class="bp6-icon bp6-icon-info-sign"
+                    >
+                      <svg
+                        data-icon="info-sign"
+                      />
+                    </span>
+                  </span>
+                </span>
+              </label>
+              <div
+                class="bp6-form-content"
+              >
+                <div
+                  class="array-input"
+                >
+                  <textarea
+                    class="bp6-input bp6-text-area bp6-fill"
+                    placeholder="(all dimensions)"
+                  />
+                </div>
+              </div>
+            </div>
+            <div
+              class="bp6-form-group form-group-with-info"
+            >
+              <label
+                class="bp6-label"
+              >
+                Max num concurrent sub tasks
+                 
+                <span
+                  class="bp6-text-muted"
+                >
+                  <span
+                    class="info-popover bp6-popover-target"
+                  >
+                    <span
+                      aria-expanded="false"
+                      aria-haspopup="menu"
+                      aria-hidden="true"
+                      class="bp6-icon bp6-icon-info-sign"
+                    >
+                      <svg
+                        data-icon="info-sign"
+                      />
+                    </span>
+                  </span>
+                </span>
+              </label>
+              <div
+                class="bp6-form-content"
+              >
+                <div
+                  class="bp6-control-group bp6-fill fancy-numeric-input bp6-numeric-input"
+                  role="group"
+                >
+                  <div
+                    class="bp6-input-group"
+                  >
+                    <input
+                      aria-valuemin="1"
+                      autocomplete="off"
+                      class="bp6-input"
+                      placeholder=""
+                      type="text"
+                      value="1"
+                    />
+                  </div>
+                  <div
+                    class="bp6-button-group bp6-vertical bp6-fixed"
+                  >
+                    <button
+                      aria-label="increment"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-up"
+                      >
+                        <svg
+                          data-icon="chevron-up"
+                        />
+                      </span>
+                    </button>
+                    <button
+                      aria-label="decrement"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-down"
+                      >
+                        <svg
+                          data-icon="chevron-down"
+                        />
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              class="bp6-form-group form-group-with-info"
+            >
+              <label
+                class="bp6-label"
+              >
+                Max columns to merge
+                 
+                <span
+                  class="bp6-text-muted"
+                >
+                  <span
+                    class="info-popover bp6-popover-target"
+                  >
+                    <span
+                      aria-expanded="false"
+                      aria-haspopup="menu"
+                      aria-hidden="true"
+                      class="bp6-icon bp6-icon-info-sign"
+                    >
+                      <svg
+                        data-icon="info-sign"
+                      />
+                    </span>
+                  </span>
+                </span>
+              </label>
+              <div
+                class="bp6-form-content"
+              >
+                <div
+                  class="bp6-control-group bp6-fill fancy-numeric-input bp6-numeric-input"
+                  role="group"
+                >
+                  <div
+                    class="bp6-input-group"
+                  >
+                    <input
+                      aria-valuemin="-1"
+                      autocomplete="off"
+                      class="bp6-input"
+                      placeholder=""
+                      type="text"
+                      value="-1"
+                    />
+                  </div>
+                  <div
+                    class="bp6-button-group bp6-vertical bp6-fixed"
+                  >
+                    <button
+                      aria-label="increment"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-up"
+                      >
+                        <svg
+                          data-icon="chevron-up"
+                        />
+                      </span>
+                    </button>
+                    <button
+                      aria-label="decrement"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-down"
+                      >
+                        <svg
+                          data-icon="chevron-down"
+                        />
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              class="bp6-form-group form-group-with-info"
+            >
+              <label
+                class="bp6-label"
+              >
+                Total num merge tasks
+                 
+                <span
+                  class="bp6-text-muted"
+                >
+                  <span
+                    class="info-popover bp6-popover-target"
+                  >
+                    <span
+                      aria-expanded="false"
+                      aria-haspopup="menu"
+                      aria-hidden="true"
+                      class="bp6-icon bp6-icon-info-sign"
+                    >
+                      <svg
+                        data-icon="info-sign"
+                      />
+                    </span>
+                  </span>
+                </span>
+              </label>
+              <div
+                class="bp6-form-content"
+              >
+                <div
+                  class="bp6-control-group bp6-fill fancy-numeric-input bp6-numeric-input"
+                  role="group"
+                >
+                  <div
+                    class="bp6-input-group"
+                  >
+                    <input
+                      aria-valuemin="1"
+                      autocomplete="off"
+                      class="bp6-input"
+                      placeholder=""
+                      type="text"
+                      value="10"
+                    />
+                  </div>
+                  <div
+                    class="bp6-button-group bp6-vertical bp6-fixed"
+                  >
+                    <button
+                      aria-label="increment"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-up"
+                      >
+                        <svg
+                          data-icon="chevron-up"
+                        />
+                      </span>
+                    </button>
+                    <button
+                      aria-label="decrement"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-down"
+                      >
+                        <svg
+                          data-icon="chevron-down"
+                        />
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              class="bp6-form-group"
+            >
+              <div
+                class="bp6-form-content"
+              >
+                <button
+                  class="bp6-button bp6-minimal"
+                  type="button"
+                >
+                  <span
+                    class="bp6-button-text"
+                  >
+                    Show more
+                  </span>
+                  <span
+                    aria-hidden="true"
+                    class="bp6-icon bp6-icon-chevron-down"
+                  >
+                    <svg
+                      data-icon="chevron-down"
+                    />
+                  </span>
+                </button>
+              </div>
+            </div>
+          </div>
+          <div
+            class="bp6-form-group form-group-with-info"
+          >
+            <div
+              class="bp6-form-content"
+            >
+              <label
+                class="bp6-control bp6-switch"
+              >
+                <input
+                  class="bp6-control-input"
+                  type="checkbox"
+                />
+                <span
+                  class="bp6-control-indicator"
+                />
+                Use concurrent locks
+              </label>
+              <span
+                class="info-popover bp6-popover-target"
+              >
+                <span
+                  aria-expanded="false"
+                  aria-haspopup="menu"
+                  aria-hidden="true"
+                  class="bp6-icon bp6-icon-info-sign"
+                >
+                  <svg
+                    data-icon="info-sign"
+                  />
+                </span>
+              </span>
+            </div>
+          </div>
+        </div>
+        <div
+          class="bp6-dialog-footer"
+        >
+          <div
+            class="bp6-dialog-footer-actions"
+          >
+            <button
+              class="bp6-button bp6-minimal history-button"
+              type="button"
+            >
+              <span
+                class="bp6-button-text"
+              >
+                History
+              </span>
+            </button>
+            <button
+              class="bp6-button bp6-intent-danger"
+              type="button"
+            >
+              <span
+                class="bp6-button-text"
+              >
+                Delete
+              </span>
+            </button>
+            <button
+              class="bp6-button"
+              type="button"
+            >
+              <span
+                class="bp6-button-text"
+              >
+                Close
+              </span>
+            </button>
+            <button
+              class="bp6-button bp6-intent-primary"
+              type="button"
+            >
+              <span
+                class="bp6-button-text"
+              >
+                Submit
+              </span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div
+      class="bp6-overlay-end-focus-trap bp6-overlay-appear bp6-overlay-appear-active"
+      tabindex="0"
+    />
+  </div>
+</div>
+`;
+
+exports[`CompactionConfigDialog matches snapshot with compactionConfig (range partitionsSpec) 1`] = `
+<div
+  class="bp6-portal"
+>
+  <div
+    aria-live="polite"
+    class="bp6-overlay bp6-overlay-open bp6-overlay-scroll-container"
+  >
+    <div
+      class="bp6-overlay-start-focus-trap bp6-overlay-appear bp6-overlay-appear-active"
+      tabindex="0"
+    />
+    <div
+      class="bp6-overlay-backdrop bp6-overlay-appear bp6-overlay-appear-active"
+    />
+    <div
+      class="bp6-dialog-container bp6-overlay-content bp6-overlay-appear bp6-overlay-appear-active"
+      tabindex="0"
+    >
+      <div
+        aria-labelledby="title-bp-dialog-3"
+        aria-modal="true"
+        class="bp6-dialog compaction-config-dialog"
+        role="dialog"
+      >
+        <div
+          class="bp6-dialog-header"
+        >
+          <h2
+            class="bp6-heading"
+            id="title-bp-dialog-3"
+          >
+            Compaction config: test1
+          </h2>
+          <button
+            aria-label="Close"
+            class="bp6-button bp6-minimal bp6-dialog-close-button"
+            type="button"
+          >
+            <span
+              aria-hidden="true"
+              class="bp6-icon bp6-icon-small-cross"
+            >
+              <svg
+                data-icon="small-cross"
+              />
+            </span>
+          </button>
+        </div>
+        <div
+          class="bp6-form-group form-json-selector"
+        >
+          <div
+            class="bp6-form-content"
+          >
+            <div
+              class="bp6-button-group bp6-fill"
+            >
+              <button
+                class="bp6-button bp6-active"
+                type="button"
+              >
+                <span
+                  class="bp6-button-text"
+                >
+                  Form
+                </span>
+              </button>
+              <button
+                class="bp6-button"
+                type="button"
+              >
+                <span
+                  class="bp6-button-text"
+                >
+                  JSON
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+        <div
+          class="content"
+        >
+          <div
+            class="auto-form"
+          >
+            <div
+              class="bp6-form-group form-group-with-info"
+            >
+              <label
+                class="bp6-label"
+              >
+                Skip offset from latest
+                 
+                <span
+                  class="bp6-text-muted"
+                >
+                  <span
+                    class="info-popover bp6-popover-target"
+                  >
+                    <span
+                      aria-expanded="false"
+                      aria-haspopup="menu"
+                      aria-hidden="true"
+                      class="bp6-icon bp6-icon-info-sign"
+                    >
+                      <svg
+                        data-icon="info-sign"
+                      />
+                    </span>
+                  </span>
+                </span>
+              </label>
+              <div
+                class="bp6-form-content"
+              >
+                <div
+                  class="formatted-input suggestible-input"
+                >
+                  <div
+                    class="bp6-input-group"
+                  >
+                    <input
+                      aria-disabled="false"
+                      class="bp6-input"
+                      placeholder=""
+                      style="padding-right: 0px;"
+                      type="text"
+                      value="P1D"
+                    />
+                    <span
+                      class="bp6-input-action"
+                    >
+                      <span
+                        class="bp6-popover-target"
+                      >
+                        <button
+                          aria-expanded="false"
+                          aria-haspopup="menu"
+                          class="bp6-button bp6-minimal"
+                          type="button"
+                        >
+                          <span
+                            aria-hidden="true"
+                            class="bp6-icon bp6-icon-caret-down"
+                          >
+                            <svg
+                              data-icon="caret-down"
+                            />
+                          </span>
+                        </button>
+                      </span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              class="bp6-form-group form-group-with-info"
+            >
+              <label
+                class="bp6-label"
+              >
+                Partitioning type
+                 
+                <span
+                  class="bp6-text-muted"
+                >
+                  <span
+                    class="info-popover bp6-popover-target"
+                  >
+                    <span
+                      aria-expanded="false"
+                      aria-haspopup="menu"
+                      aria-hidden="true"
+                      class="bp6-icon bp6-icon-info-sign"
+                    >
+                      <svg
+                        data-icon="info-sign"
+                      />
+                    </span>
+                  </span>
+                </span>
+              </label>
+              <div
+                class="bp6-form-content"
+              >
+                <div
+                  class="formatted-input suggestible-input"
+                >
+                  <div
+                    class="bp6-input-group"
+                  >
+                    <input
+                      aria-disabled="false"
+                      class="bp6-input"
+                      placeholder=""
+                      style="padding-right: 0px;"
+                      type="text"
+                      value="range"
+                    />
+                    <span
+                      class="bp6-input-action"
+                    >
+                      <span
+                        class="bp6-popover-target"
+                      >
+                        <button
+                          aria-expanded="false"
+                          aria-haspopup="menu"
+                          class="bp6-button bp6-minimal"
+                          type="button"
+                        >
+                          <span
+                            aria-hidden="true"
+                            class="bp6-icon bp6-icon-caret-down"
+                          >
+                            <svg
+                              data-icon="caret-down"
+                            />
+                          </span>
+                        </button>
+                      </span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              class="bp6-form-group form-group-with-info"
+            >
+              <label
+                class="bp6-label"
+              >
+                Partition dimensions
+                 
+                <span
+                  class="bp6-text-muted"
+                >
+                  <span
+                    class="info-popover bp6-popover-target"
+                  >
+                    <span
+                      aria-expanded="false"
+                      aria-haspopup="menu"
+                      aria-hidden="true"
+                      class="bp6-icon bp6-icon-info-sign"
+                    >
+                      <svg
+                        data-icon="info-sign"
+                      />
+                    </span>
+                  </span>
+                </span>
+              </label>
+              <div
+                class="bp6-form-content"
+              >
+                <div
+                  class="array-input"
+                >
+                  <textarea
+                    class="bp6-input bp6-text-area bp6-intent-primary bp6-fill"
+                    placeholder=""
+                  />
+                </div>
+              </div>
+            </div>
+            <div
+              class="bp6-form-group form-group-with-info"
+            >
+              <label
+                class="bp6-label"
+              >
+                Target rows per segment
+                 
+                <span
+                  class="bp6-text-muted"
+                >
+                  <span
+                    class="info-popover bp6-popover-target"
+                  >
+                    <span
+                      aria-expanded="false"
+                      aria-haspopup="menu"
+                      aria-hidden="true"
+                      class="bp6-icon bp6-icon-info-sign"
+                    >
+                      <svg
+                        data-icon="info-sign"
+                      />
+                    </span>
+                  </span>
+                </span>
+              </label>
+              <div
+                class="bp6-form-content"
+              >
+                <div
+                  class="bp6-control-group bp6-fill fancy-numeric-input bp6-numeric-input"
+                  role="group"
+                >
+                  <div
+                    class="bp6-input-group"
+                  >
+                    <input
+                      aria-valuemin="0"
+                      autocomplete="off"
+                      class="bp6-input"
+                      placeholder=""
+                      type="text"
+                      value=""
+                    />
+                  </div>
+                  <div
+                    class="bp6-button-group bp6-vertical bp6-fixed"
+                  >
+                    <button
+                      aria-label="increment"
+                      class="bp6-button bp6-intent-primary"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-up"
+                      >
+                        <svg
+                          data-icon="chevron-up"
+                        />
+                      </span>
+                    </button>
+                    <button
+                      aria-label="decrement"
+                      class="bp6-button bp6-intent-primary"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-down"
+                      >
+                        <svg
+                          data-icon="chevron-down"
+                        />
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              class="bp6-form-group form-group-with-info"
+            >
+              <label
+                class="bp6-label"
+              >
+                Max rows per segment
+                 
+                <span
+                  class="bp6-text-muted"
+                >
+                  <span
+                    class="info-popover bp6-popover-target"
+                  >
+                    <span
+                      aria-expanded="false"
+                      aria-haspopup="menu"
+                      aria-hidden="true"
+                      class="bp6-icon bp6-icon-info-sign"
+                    >
+                      <svg
+                        data-icon="info-sign"
+                      />
+                    </span>
+                  </span>
+                </span>
+              </label>
+              <div
+                class="bp6-form-content"
+              >
+                <div
+                  class="bp6-control-group bp6-fill fancy-numeric-input bp6-numeric-input"
+                  role="group"
+                >
+                  <div
+                    class="bp6-input-group"
+                  >
+                    <input
+                      aria-valuemin="0"
+                      autocomplete="off"
+                      class="bp6-input"
+                      placeholder=""
+                      type="text"
+                      value=""
+                    />
+                  </div>
+                  <div
+                    class="bp6-button-group bp6-vertical bp6-fixed"
+                  >
+                    <button
+                      aria-label="increment"
+                      class="bp6-button bp6-intent-primary"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-up"
+                      >
+                        <svg
+                          data-icon="chevron-up"
+                        />
+                      </span>
+                    </button>
+                    <button
+                      aria-label="decrement"
+                      class="bp6-button bp6-intent-primary"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-down"
+                      >
+                        <svg
+                          data-icon="chevron-down"
+                        />
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              class="bp6-form-group form-group-with-info"
+            >
+              <label
+                class="bp6-label"
+              >
+                Assume grouped
+                 
+                <span
+                  class="bp6-text-muted"
+                >
+                  <span
+                    class="info-popover bp6-popover-target"
+                  >
+                    <span
+                      aria-expanded="false"
+                      aria-haspopup="menu"
+                      aria-hidden="true"
+                      class="bp6-icon bp6-icon-info-sign"
+                    >
+                      <svg
+                        data-icon="info-sign"
+                      />
+                    </span>
+                  </span>
+                </span>
+              </label>
+              <div
+                class="bp6-form-content"
+              >
+                <div
+                  class="bp6-segmented-control"
+                  role="radiogroup"
+                >
+                  <button
+                    aria-checked="true"
+                    class="bp6-button bp6-small"
+                    role="radio"
+                    tabindex="0"
+                    type="button"
+                  >
+                    <span
+                      class="bp6-button-text"
+                    >
+                      False
+                    </span>
+                  </button>
+                  <button
+                    aria-checked="false"
+                    class="bp6-button bp6-small bp6-minimal"
+                    role="radio"
+                    tabindex="-1"
+                    type="button"
+                  >
+                    <span
+                      class="bp6-button-text"
+                    >
+                      True
+                    </span>
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div
+              class="bp6-form-group form-group-with-info"
+            >
+              <label
+                class="bp6-label"
+              >
+                Max num concurrent sub tasks
+                 
+                <span
+                  class="bp6-text-muted"
+                >
+                  <span
+                    class="info-popover bp6-popover-target"
+                  >
+                    <span
+                      aria-expanded="false"
+                      aria-haspopup="menu"
+                      aria-hidden="true"
+                      class="bp6-icon bp6-icon-info-sign"
+                    >
+                      <svg
+                        data-icon="info-sign"
+                      />
+                    </span>
+                  </span>
+                </span>
+              </label>
+              <div
+                class="bp6-form-content"
+              >
+                <div
+                  class="bp6-control-group bp6-fill fancy-numeric-input bp6-numeric-input"
+                  role="group"
+                >
+                  <div
+                    class="bp6-input-group"
+                  >
+                    <input
+                      aria-valuemin="1"
+                      autocomplete="off"
+                      class="bp6-input"
+                      placeholder=""
+                      type="text"
+                      value="1"
+                    />
+                  </div>
+                  <div
+                    class="bp6-button-group bp6-vertical bp6-fixed"
+                  >
+                    <button
+                      aria-label="increment"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-up"
+                      >
+                        <svg
+                          data-icon="chevron-up"
+                        />
+                      </span>
+                    </button>
+                    <button
+                      aria-label="decrement"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-down"
+                      >
+                        <svg
+                          data-icon="chevron-down"
+                        />
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              class="bp6-form-group form-group-with-info"
+            >
+              <label
+                class="bp6-label"
+              >
+                Max columns to merge
+                 
+                <span
+                  class="bp6-text-muted"
+                >
+                  <span
+                    class="info-popover bp6-popover-target"
+                  >
+                    <span
+                      aria-expanded="false"
+                      aria-haspopup="menu"
+                      aria-hidden="true"
+                      class="bp6-icon bp6-icon-info-sign"
+                    >
+                      <svg
+                        data-icon="info-sign"
+                      />
+                    </span>
+                  </span>
+                </span>
+              </label>
+              <div
+                class="bp6-form-content"
+              >
+                <div
+                  class="bp6-control-group bp6-fill fancy-numeric-input bp6-numeric-input"
+                  role="group"
+                >
+                  <div
+                    class="bp6-input-group"
+                  >
+                    <input
+                      aria-valuemin="-1"
+                      autocomplete="off"
+                      class="bp6-input"
+                      placeholder=""
+                      type="text"
+                      value="-1"
+                    />
+                  </div>
+                  <div
+                    class="bp6-button-group bp6-vertical bp6-fixed"
+                  >
+                    <button
+                      aria-label="increment"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-up"
+                      >
+                        <svg
+                          data-icon="chevron-up"
+                        />
+                      </span>
+                    </button>
+                    <button
+                      aria-label="decrement"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-down"
+                      >
+                        <svg
+                          data-icon="chevron-down"
+                        />
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              class="bp6-form-group form-group-with-info"
+            >
+              <label
+                class="bp6-label"
+              >
+                Total num merge tasks
+                 
+                <span
+                  class="bp6-text-muted"
+                >
+                  <span
+                    class="info-popover bp6-popover-target"
+                  >
+                    <span
+                      aria-expanded="false"
+                      aria-haspopup="menu"
+                      aria-hidden="true"
+                      class="bp6-icon bp6-icon-info-sign"
+                    >
+                      <svg
+                        data-icon="info-sign"
+                      />
+                    </span>
+                  </span>
+                </span>
+              </label>
+              <div
+                class="bp6-form-content"
+              >
+                <div
+                  class="bp6-control-group bp6-fill fancy-numeric-input bp6-numeric-input"
+                  role="group"
+                >
+                  <div
+                    class="bp6-input-group"
+                  >
+                    <input
+                      aria-valuemin="1"
+                      autocomplete="off"
+                      class="bp6-input"
+                      placeholder=""
+                      type="text"
+                      value="10"
+                    />
+                  </div>
+                  <div
+                    class="bp6-button-group bp6-vertical bp6-fixed"
+                  >
+                    <button
+                      aria-label="increment"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-up"
+                      >
+                        <svg
+                          data-icon="chevron-up"
+                        />
+                      </span>
+                    </button>
+                    <button
+                      aria-label="decrement"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-down"
+                      >
+                        <svg
+                          data-icon="chevron-down"
+                        />
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              class="bp6-form-group"
+            >
+              <div
+                class="bp6-form-content"
+              >
+                <button
+                  class="bp6-button bp6-minimal"
+                  type="button"
+                >
+                  <span
+                    class="bp6-button-text"
+                  >
+                    Show more
+                  </span>
+                  <span
+                    aria-hidden="true"
+                    class="bp6-icon bp6-icon-chevron-down"
+                  >
+                    <svg
+                      data-icon="chevron-down"
+                    />
+                  </span>
+                </button>
+              </div>
+            </div>
+          </div>
+          <div
+            class="bp6-form-group form-group-with-info"
+          >
+            <div
+              class="bp6-form-content"
+            >
+              <label
+                class="bp6-control bp6-switch"
+              >
+                <input
+                  class="bp6-control-input"
+                  type="checkbox"
+                />
+                <span
+                  class="bp6-control-indicator"
+                />
+                Use concurrent locks
+              </label>
+              <span
+                class="info-popover bp6-popover-target"
+              >
+                <span
+                  aria-expanded="false"
+                  aria-haspopup="menu"
+                  aria-hidden="true"
+                  class="bp6-icon bp6-icon-info-sign"
+                >
+                  <svg
+                    data-icon="info-sign"
+                  />
+                </span>
+              </span>
+            </div>
+          </div>
+        </div>
+        <div
+          class="bp6-dialog-footer"
+        >
+          <div
+            class="bp6-dialog-footer-actions"
+          >
+            <button
+              class="bp6-button bp6-minimal history-button"
+              type="button"
+            >
+              <span
+                class="bp6-button-text"
+              >
+                History
+              </span>
+            </button>
+            <button
+              class="bp6-button bp6-intent-danger"
+              type="button"
+            >
+              <span
+                class="bp6-button-text"
+              >
+                Delete
+              </span>
+            </button>
+            <button
+              class="bp6-button"
+              type="button"
+            >
+              <span
+                class="bp6-button-text"
+              >
+                Close
+              </span>
+            </button>
+            <button
+              class="bp6-button bp6-disabled bp6-intent-primary"
+              disabled=""
+              tabindex="-1"
+              type="button"
+            >
+              <span
+                class="bp6-button-text"
+              >
+                Submit
+              </span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div
+      class="bp6-overlay-end-focus-trap bp6-overlay-appear bp6-overlay-appear-active"
+      tabindex="0"
+    />
+  </div>
+</div>
+`;
+
+exports[`CompactionConfigDialog matches snapshot without compactionConfig 1`] = `
+<div
+  class="bp6-portal"
+>
+  <div
+    aria-live="polite"
+    class="bp6-overlay bp6-overlay-open bp6-overlay-scroll-container"
+  >
+    <div
+      class="bp6-overlay-start-focus-trap bp6-overlay-appear bp6-overlay-appear-active"
+      tabindex="0"
+    />
+    <div
+      class="bp6-overlay-backdrop bp6-overlay-appear bp6-overlay-appear-active"
+    />
+    <div
+      class="bp6-dialog-container bp6-overlay-content bp6-overlay-appear bp6-overlay-appear-active"
+      tabindex="0"
+    >
+      <div
+        aria-labelledby="title-bp-dialog-0"
+        aria-modal="true"
+        class="bp6-dialog compaction-config-dialog"
+        role="dialog"
+      >
+        <div
+          class="bp6-dialog-header"
+        >
+          <h2
+            class="bp6-heading"
+            id="title-bp-dialog-0"
+          >
+            Compaction config: test1
+          </h2>
+          <button
+            aria-label="Close"
+            class="bp6-button bp6-minimal bp6-dialog-close-button"
+            type="button"
+          >
+            <span
+              aria-hidden="true"
+              class="bp6-icon bp6-icon-small-cross"
+            >
+              <svg
+                data-icon="small-cross"
+              />
+            </span>
+          </button>
+        </div>
+        <div
+          class="bp6-form-group form-json-selector"
+        >
+          <div
+            class="bp6-form-content"
+          >
+            <div
+              class="bp6-button-group bp6-fill"
+            >
+              <button
+                class="bp6-button bp6-active"
+                type="button"
+              >
+                <span
+                  class="bp6-button-text"
+                >
+                  Form
+                </span>
+              </button>
+              <button
+                class="bp6-button"
+                type="button"
+              >
+                <span
+                  class="bp6-button-text"
+                >
+                  JSON
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+        <div
+          class="content"
+        >
+          <div
+            class="auto-form"
+          >
+            <div
+              class="bp6-form-group form-group-with-info"
+            >
+              <label
+                class="bp6-label"
+              >
+                Skip offset from latest
+                 
+                <span
+                  class="bp6-text-muted"
+                >
+                  <span
+                    class="info-popover bp6-popover-target"
+                  >
+                    <span
+                      aria-expanded="false"
+                      aria-haspopup="menu"
+                      aria-hidden="true"
+                      class="bp6-icon bp6-icon-info-sign"
+                    >
+                      <svg
+                        data-icon="info-sign"
+                      />
+                    </span>
+                  </span>
+                </span>
+              </label>
+              <div
+                class="bp6-form-content"
+              >
+                <div
+                  class="formatted-input suggestible-input"
+                >
+                  <div
+                    class="bp6-input-group"
+                  >
+                    <input
+                      aria-disabled="false"
+                      class="bp6-input"
+                      placeholder=""
+                      style="padding-right: 0px;"
+                      type="text"
+                      value="P1D"
+                    />
+                    <span
+                      class="bp6-input-action"
+                    >
+                      <span
+                        class="bp6-popover-target"
+                      >
+                        <button
+                          aria-expanded="false"
+                          aria-haspopup="menu"
+                          class="bp6-button bp6-minimal"
+                          type="button"
+                        >
+                          <span
+                            aria-hidden="true"
+                            class="bp6-icon bp6-icon-caret-down"
+                          >
+                            <svg
+                              data-icon="caret-down"
+                            />
+                          </span>
+                        </button>
+                      </span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              class="bp6-form-group form-group-with-info"
+            >
+              <label
+                class="bp6-label"
+              >
+                Partitioning type
+                 
+                <span
+                  class="bp6-text-muted"
+                >
+                  <span
+                    class="info-popover bp6-popover-target"
+                  >
+                    <span
+                      aria-expanded="false"
+                      aria-haspopup="menu"
+                      aria-hidden="true"
+                      class="bp6-icon bp6-icon-info-sign"
+                    >
+                      <svg
+                        data-icon="info-sign"
+                      />
+                    </span>
+                  </span>
+                </span>
+              </label>
+              <div
+                class="bp6-form-content"
+              >
+                <div
+                  class="formatted-input suggestible-input"
+                >
+                  <div
+                    class="bp6-input-group"
+                  >
+                    <input
+                      aria-disabled="false"
+                      class="bp6-input"
+                      placeholder=""
+                      style="padding-right: 0px;"
+                      type="text"
+                      value="dynamic"
+                    />
+                    <span
+                      class="bp6-input-action"
+                    >
+                      <span
+                        class="bp6-popover-target"
+                      >
+                        <button
+                          aria-expanded="false"
+                          aria-haspopup="menu"
+                          class="bp6-button bp6-minimal"
+                          type="button"
+                        >
+                          <span
+                            aria-hidden="true"
+                            class="bp6-icon bp6-icon-caret-down"
+                          >
+                            <svg
+                              data-icon="caret-down"
+                            />
+                          </span>
+                        </button>
+                      </span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              class="bp6-form-group form-group-with-info"
+            >
+              <label
+                class="bp6-label"
+              >
+                Max rows per segment
+                 
+                <span
+                  class="bp6-text-muted"
+                >
+                  <span
+                    class="info-popover bp6-popover-target"
+                  >
+                    <span
+                      aria-expanded="false"
+                      aria-haspopup="menu"
+                      aria-hidden="true"
+                      class="bp6-icon bp6-icon-info-sign"
+                    >
+                      <svg
+                        data-icon="info-sign"
+                      />
+                    </span>
+                  </span>
+                </span>
+              </label>
+              <div
+                class="bp6-form-content"
+              >
+                <div
+                  class="bp6-control-group bp6-fill fancy-numeric-input bp6-numeric-input"
+                  role="group"
+                >
+                  <div
+                    class="bp6-input-group"
+                  >
+                    <input
+                      aria-valuemin="0"
+                      autocomplete="off"
+                      class="bp6-input"
+                      placeholder=""
+                      type="text"
+                      value="5000000"
+                    />
+                  </div>
+                  <div
+                    class="bp6-button-group bp6-vertical bp6-fixed"
+                  >
+                    <button
+                      aria-label="increment"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-up"
+                      >
+                        <svg
+                          data-icon="chevron-up"
+                        />
+                      </span>
+                    </button>
+                    <button
+                      aria-label="decrement"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-down"
+                      >
+                        <svg
+                          data-icon="chevron-down"
+                        />
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              class="bp6-form-group form-group-with-info"
+            >
+              <label
+                class="bp6-label"
+              >
+                Max total rows
+                 
+                <span
+                  class="bp6-text-muted"
+                >
+                  <span
+                    class="info-popover bp6-popover-target"
+                  >
+                    <span
+                      aria-expanded="false"
+                      aria-haspopup="menu"
+                      aria-hidden="true"
+                      class="bp6-icon bp6-icon-info-sign"
+                    >
+                      <svg
+                        data-icon="info-sign"
+                      />
+                    </span>
+                  </span>
+                </span>
+              </label>
+              <div
+                class="bp6-form-content"
+              >
+                <div
+                  class="bp6-control-group bp6-fill fancy-numeric-input bp6-numeric-input"
+                  role="group"
+                >
+                  <div
+                    class="bp6-input-group"
+                  >
+                    <input
+                      aria-valuemin="0"
+                      autocomplete="off"
+                      class="bp6-input"
+                      placeholder=""
+                      type="text"
+                      value="20000000"
+                    />
+                  </div>
+                  <div
+                    class="bp6-button-group bp6-vertical bp6-fixed"
+                  >
+                    <button
+                      aria-label="increment"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-up"
+                      >
+                        <svg
+                          data-icon="chevron-up"
+                        />
+                      </span>
+                    </button>
+                    <button
+                      aria-label="decrement"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-down"
+                      >
+                        <svg
+                          data-icon="chevron-down"
+                        />
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              class="bp6-form-group form-group-with-info"
+            >
+              <label
+                class="bp6-label"
+              >
+                Max num concurrent sub tasks
+                 
+                <span
+                  class="bp6-text-muted"
+                >
+                  <span
+                    class="info-popover bp6-popover-target"
+                  >
+                    <span
+                      aria-expanded="false"
+                      aria-haspopup="menu"
+                      aria-hidden="true"
+                      class="bp6-icon bp6-icon-info-sign"
+                    >
+                      <svg
+                        data-icon="info-sign"
+                      />
+                    </span>
+                  </span>
+                </span>
+              </label>
+              <div
+                class="bp6-form-content"
+              >
+                <div
+                  class="bp6-control-group bp6-fill fancy-numeric-input bp6-numeric-input"
+                  role="group"
+                >
+                  <div
+                    class="bp6-input-group"
+                  >
+                    <input
+                      aria-valuemin="1"
+                      autocomplete="off"
+                      class="bp6-input"
+                      placeholder=""
+                      type="text"
+                      value="1"
+                    />
+                  </div>
+                  <div
+                    class="bp6-button-group bp6-vertical bp6-fixed"
+                  >
+                    <button
+                      aria-label="increment"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-up"
+                      >
+                        <svg
+                          data-icon="chevron-up"
+                        />
+                      </span>
+                    </button>
+                    <button
+                      aria-label="decrement"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-down"
+                      >
+                        <svg
+                          data-icon="chevron-down"
+                        />
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              class="bp6-form-group form-group-with-info"
+            >
+              <label
+                class="bp6-label"
+              >
+                Max columns to merge
+                 
+                <span
+                  class="bp6-text-muted"
+                >
+                  <span
+                    class="info-popover bp6-popover-target"
+                  >
+                    <span
+                      aria-expanded="false"
+                      aria-haspopup="menu"
+                      aria-hidden="true"
+                      class="bp6-icon bp6-icon-info-sign"
+                    >
+                      <svg
+                        data-icon="info-sign"
+                      />
+                    </span>
+                  </span>
+                </span>
+              </label>
+              <div
+                class="bp6-form-content"
+              >
+                <div
+                  class="bp6-control-group bp6-fill fancy-numeric-input bp6-numeric-input"
+                  role="group"
+                >
+                  <div
+                    class="bp6-input-group"
+                  >
+                    <input
+                      aria-valuemin="-1"
+                      autocomplete="off"
+                      class="bp6-input"
+                      placeholder=""
+                      type="text"
+                      value="-1"
+                    />
+                  </div>
+                  <div
+                    class="bp6-button-group bp6-vertical bp6-fixed"
+                  >
+                    <button
+                      aria-label="increment"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-up"
+                      >
+                        <svg
+                          data-icon="chevron-up"
+                        />
+                      </span>
+                    </button>
+                    <button
+                      aria-label="decrement"
+                      class="bp6-button"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        class="bp6-icon bp6-icon-chevron-down"
+                      >
+                        <svg
+                          data-icon="chevron-down"
+                        />
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              class="bp6-form-group"
+            >
+              <div
+                class="bp6-form-content"
+              >
+                <button
+                  class="bp6-button bp6-minimal"
+                  type="button"
+                >
+                  <span
+                    class="bp6-button-text"
+                  >
+                    Show more
+                  </span>
+                  <span
+                    aria-hidden="true"
+                    class="bp6-icon bp6-icon-chevron-down"
+                  >
+                    <svg
+                      data-icon="chevron-down"
+                    />
+                  </span>
+                </button>
+              </div>
+            </div>
+          </div>
+          <div
+            class="bp6-form-group form-group-with-info"
+          >
+            <div
+              class="bp6-form-content"
+            >
+              <label
+                class="bp6-control bp6-switch"
+              >
+                <input
+                  class="bp6-control-input"
+                  type="checkbox"
+                />
+                <span
+                  class="bp6-control-indicator"
+                />
+                Use concurrent locks
+              </label>
+              <span
+                class="info-popover bp6-popover-target"
+              >
+                <span
+                  aria-expanded="false"
+                  aria-haspopup="menu"
+                  aria-hidden="true"
+                  class="bp6-icon bp6-icon-info-sign"
+                >
+                  <svg
+                    data-icon="info-sign"
+                  />
+                </span>
+              </span>
+            </div>
+          </div>
+        </div>
+        <div
+          class="bp6-dialog-footer"
+        >
+          <div
+            class="bp6-dialog-footer-actions"
+          >
+            <button
+              class="bp6-button bp6-minimal history-button"
+              type="button"
+            >
+              <span
+                class="bp6-button-text"
+              >
+                History
+              </span>
+            </button>
+            <button
+              class="bp6-button bp6-disabled bp6-intent-danger"
+              data-tooltip="There is no compaction config currently set for this datasource"
+              disabled=""
+              tabindex="-1"
+              type="button"
+            >
+              <span
+                class="bp6-button-text"
+              >
+                Delete
+              </span>
+            </button>
+            <button
+              class="bp6-button"
+              type="button"
+            >
+              <span
+                class="bp6-button-text"
+              >
+                Close
+              </span>
+            </button>
+            <button
+              class="bp6-button bp6-intent-primary"
+              type="button"
+            >
+              <span
+                class="bp6-button-text"
+              >
+                Submit
+              </span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div
+      class="bp6-overlay-end-focus-trap bp6-overlay-appear bp6-overlay-appear-active"
+      tabindex="0"
+    />
+  </div>
+</div>
+`;

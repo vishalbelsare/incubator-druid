@@ -19,10 +19,10 @@
 
 package org.apache.druid.sql.calcite.rel;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedMap;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Iterators;
@@ -36,35 +36,53 @@ import org.apache.calcite.rel.core.Filter;
 import org.apache.calcite.rel.core.Project;
 import org.apache.calcite.rel.core.Sort;
 import org.apache.calcite.rel.type.RelDataType;
+import org.apache.calcite.rel.type.RelDataTypeFactory;
 import org.apache.calcite.rex.RexBuilder;
 import org.apache.calcite.rex.RexInputRef;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.sql.SqlKind;
-import org.apache.calcite.sql.type.SqlTypeName;
 import org.apache.calcite.util.ImmutableBitSet;
+import org.apache.druid.error.DruidException;
 import org.apache.druid.java.util.common.ISE;
+import org.apache.druid.java.util.common.Intervals;
+import org.apache.druid.java.util.common.JodaUtils;
 import org.apache.druid.java.util.common.Pair;
 import org.apache.druid.java.util.common.granularity.Granularities;
 import org.apache.druid.java.util.common.granularity.Granularity;
 import org.apache.druid.query.DataSource;
+import org.apache.druid.query.FilteredDataSource;
 import org.apache.druid.query.JoinDataSource;
+import org.apache.druid.query.Order;
+import org.apache.druid.query.OrderBy;
+import org.apache.druid.query.ProjectDataSource;
 import org.apache.druid.query.Query;
 import org.apache.druid.query.QueryDataSource;
+import org.apache.druid.query.TableDataSource;
+import org.apache.druid.query.UnionDataSource;
+import org.apache.druid.query.UnnestDataSource;
 import org.apache.druid.query.aggregation.AggregatorFactory;
 import org.apache.druid.query.aggregation.LongMaxAggregatorFactory;
 import org.apache.druid.query.aggregation.LongMinAggregatorFactory;
 import org.apache.druid.query.aggregation.PostAggregator;
 import org.apache.druid.query.aggregation.SimpleLongAggregatorFactory;
+import org.apache.druid.query.context.QueryContextParameters;
 import org.apache.druid.query.dimension.DimensionSpec;
 import org.apache.druid.query.filter.DimFilter;
+import org.apache.druid.query.filter.DimFilters;
 import org.apache.druid.query.groupby.GroupByQuery;
 import org.apache.druid.query.groupby.having.DimFilterHavingSpec;
 import org.apache.druid.query.groupby.orderby.DefaultLimitSpec;
 import org.apache.druid.query.groupby.orderby.OrderByColumnSpec;
+import org.apache.druid.query.operator.ColumnWithDirection;
+import org.apache.druid.query.operator.ColumnWithDirection.Direction;
+import org.apache.druid.query.operator.NaiveSortOperatorFactory;
+import org.apache.druid.query.operator.OperatorFactory;
+import org.apache.druid.query.operator.ScanOperatorFactory;
+import org.apache.druid.query.operator.WindowOperatorQuery;
 import org.apache.druid.query.ordering.StringComparator;
-import org.apache.druid.query.ordering.StringComparators;
-import org.apache.druid.query.planning.DataSourceAnalysis;
+import org.apache.druid.query.planning.ExecutionVertex;
 import org.apache.druid.query.scan.ScanQuery;
+import org.apache.druid.query.spec.LegacySegmentSpec;
 import org.apache.druid.query.timeboundary.TimeBoundaryQuery;
 import org.apache.druid.query.timeseries.TimeseriesQuery;
 import org.apache.druid.query.topn.DimensionTopNMetricSpec;
@@ -72,21 +90,19 @@ import org.apache.druid.query.topn.InvertedTopNMetricSpec;
 import org.apache.druid.query.topn.NumericTopNMetricSpec;
 import org.apache.druid.query.topn.TopNMetricSpec;
 import org.apache.druid.query.topn.TopNQuery;
-import org.apache.druid.segment.RowBasedStorageAdapter;
 import org.apache.druid.segment.VirtualColumn;
 import org.apache.druid.segment.VirtualColumns;
-import org.apache.druid.segment.column.ColumnCapabilities;
 import org.apache.druid.segment.column.ColumnHolder;
 import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.column.RowSignature;
-import org.apache.druid.segment.column.Types;
-import org.apache.druid.segment.column.ValueType;
 import org.apache.druid.segment.join.JoinableFactoryWrapper;
 import org.apache.druid.sql.calcite.aggregation.Aggregation;
 import org.apache.druid.sql.calcite.aggregation.DimensionExpression;
 import org.apache.druid.sql.calcite.expression.DruidExpression;
 import org.apache.druid.sql.calcite.expression.Expressions;
 import org.apache.druid.sql.calcite.filtration.Filtration;
+import org.apache.druid.sql.calcite.filtration.RangeRefKey;
+import org.apache.druid.sql.calcite.filtration.Ranges;
 import org.apache.druid.sql.calcite.planner.Calcites;
 import org.apache.druid.sql.calcite.planner.OffsetLimit;
 import org.apache.druid.sql.calcite.planner.PlannerContext;
@@ -97,18 +113,16 @@ import org.joda.time.Interval;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
-
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.SortedSet;
-import java.util.TreeSet;
 import java.util.stream.Collectors;
 
 /**
@@ -118,13 +132,8 @@ import java.util.stream.Collectors;
 public class DruidQuery
 {
   /**
-   * Native query context key that is set when {@link EngineFeature#SCAN_NEEDS_SIGNATURE}.
-   */
-  public static final String CTX_SCAN_SIGNATURE = "scanSignature";
-
-  /**
    * Maximum number of time-granular buckets that we allow for non-Druid tables.
-   *
+   * <p>
    * Used by {@link #canUseQueryGranularity}.
    */
   private static final int MAX_TIME_GRAINS_NON_DRUID_TABLE = 100000;
@@ -144,6 +153,9 @@ public class DruidQuery
   @Nullable
   private final Sorting sorting;
 
+  @Nullable
+  private final Windowing windowing;
+
   private final Query<?> query;
   private final RowSignature outputRowSignature;
   private final RelDataType outputRowType;
@@ -157,6 +169,7 @@ public class DruidQuery
       @Nullable final Projection selectProjection,
       @Nullable final Grouping grouping,
       @Nullable final Sorting sorting,
+      @Nullable final Windowing windowing,
       final RowSignature sourceRowSignature,
       final RelDataType outputRowType,
       final VirtualColumnRegistry virtualColumnRegistry
@@ -168,9 +181,16 @@ public class DruidQuery
     this.selectProjection = selectProjection;
     this.grouping = grouping;
     this.sorting = sorting;
+    this.windowing = windowing;
     this.sourceRowSignature = sourceRowSignature;
 
-    this.outputRowSignature = computeOutputRowSignature(sourceRowSignature, selectProjection, grouping, sorting);
+    this.outputRowSignature = computeOutputRowSignature(
+        sourceRowSignature,
+        selectProjection,
+        grouping,
+        sorting,
+        windowing
+    );
     this.outputRowType = Preconditions.checkNotNull(outputRowType, "outputRowType");
     this.virtualColumnRegistry = Preconditions.checkNotNull(virtualColumnRegistry, "virtualColumnRegistry");
     this.query = computeQuery();
@@ -183,6 +203,7 @@ public class DruidQuery
       final PlannerContext plannerContext,
       final RexBuilder rexBuilder,
       final boolean finalizeAggregations,
+      final boolean applyPolicies,
       @Nullable VirtualColumnRegistry virtualColumnRegistry
   )
   {
@@ -190,8 +211,9 @@ public class DruidQuery
     if (virtualColumnRegistry == null) {
       virtualColumnRegistry = VirtualColumnRegistry.create(
           sourceRowSignature,
-          plannerContext.getExprMacroTable(),
-          plannerContext.getPlannerConfig().isForceExpressionVirtualColumns()
+          plannerContext.getExpressionParser(),
+          plannerContext.getPlannerConfig().isForceExpressionVirtualColumns(),
+          dataSource.getReservedColumns()
       );
     }
 
@@ -200,6 +222,7 @@ public class DruidQuery
     final Projection selectProjection;
     final Grouping grouping;
     final Sorting sorting;
+    final Windowing windowing;
 
     if (partialQuery.getWhereFilter() != null) {
       filter = Preconditions.checkNotNull(
@@ -221,7 +244,7 @@ public class DruidQuery
           computeSelectProjection(
               partialQuery,
               plannerContext,
-              computeOutputRowSignature(sourceRowSignature, null, null, null),
+              computeOutputRowSignature(sourceRowSignature, null, null, null, null),
               virtualColumnRegistry
           )
       );
@@ -234,9 +257,8 @@ public class DruidQuery
           computeGrouping(
               partialQuery,
               plannerContext,
-              computeOutputRowSignature(sourceRowSignature, null, null, null),
+              computeOutputRowSignature(sourceRowSignature, null, null, null, null),
               virtualColumnRegistry,
-              rexBuilder,
               finalizeAggregations
           )
       );
@@ -249,7 +271,7 @@ public class DruidQuery
           computeSorting(
               partialQuery,
               plannerContext,
-              computeOutputRowSignature(sourceRowSignature, selectProjection, grouping, null),
+              computeOutputRowSignature(sourceRowSignature, selectProjection, grouping, null, null),
               // When sorting follows grouping, virtual columns cannot be used
               partialQuery.getAggregate() != null ? null : virtualColumnRegistry
           )
@@ -258,13 +280,36 @@ public class DruidQuery
       sorting = null;
     }
 
+    if (partialQuery.getWindow() != null) {
+      if (plannerContext.featureAvailable(EngineFeature.WINDOW_FUNCTIONS)) {
+        windowing = Preconditions.checkNotNull(
+            Windowing.fromCalciteStuff(
+                partialQuery,
+                plannerContext,
+                sourceRowSignature, // Plans immediately after Scan, so safe to use the row signature from scan
+                rexBuilder,
+                virtualColumnRegistry
+            )
+        );
+      } else {
+        plannerContext.setPlanningError("Windowing not supported");
+        throw new CannotBuildQueryException("Windowing not supported");
+      }
+    } else {
+      windowing = null;
+    }
+
     return new DruidQuery(
-        dataSource,
+        applyPolicies ? dataSource.withPolicies(
+            plannerContext.getAuthorizationResult().getPolicyMap(),
+            plannerContext.getPlannerToolbox().getPolicyEnforcer()
+        ) : dataSource,
         plannerContext,
         filter,
         selectProjection,
         grouping,
         sorting,
+        windowing,
         sourceRowSignature,
         outputRowType,
         virtualColumnRegistry
@@ -284,13 +329,11 @@ public class DruidQuery
 
   @Nullable
   private static DimFilter computeHavingFilter(
-      final PartialDruidQuery partialQuery,
+      final Filter havingFilter,
       final PlannerContext plannerContext,
       final RowSignature aggregateSignature
   )
   {
-    final Filter havingFilter = partialQuery.getHavingFilter();
-
     if (havingFilter == null) {
       return null;
     }
@@ -300,7 +343,7 @@ public class DruidQuery
   }
 
   @Nonnull
-  private static DimFilter getDimFilter(
+  public static DimFilter getDimFilter(
       final PlannerContext plannerContext,
       final RowSignature rowSignature,
       @Nullable final VirtualColumnRegistry virtualColumnRegistry,
@@ -338,33 +381,36 @@ public class DruidQuery
     }
   }
 
-  @Nonnull
-  private static Grouping computeGrouping(
-      final PartialDruidQuery partialQuery,
+  public static Grouping buildGrouping(
+      final Aggregate aggregate,
+      final Project selectProject,
+      final Filter havingFilterRel,
       final PlannerContext plannerContext,
       final RowSignature rowSignature,
       final VirtualColumnRegistry virtualColumnRegistry,
-      final RexBuilder rexBuilder,
       final boolean finalizeAggregations
   )
   {
-    final Aggregate aggregate = Preconditions.checkNotNull(partialQuery.getAggregate(), "aggregate");
-    final Project aggregateProject = partialQuery.getAggregateProject();
+    final RexBuilder rexBuilder = aggregate.getCluster().getRexBuilder();
 
     final List<DimensionExpression> dimensions = computeDimensions(
-        partialQuery,
+        aggregate,
+        selectProject,
         plannerContext,
         rowSignature,
-        virtualColumnRegistry
+        virtualColumnRegistry,
+        rexBuilder.getTypeFactory()
     );
 
     final Subtotals subtotals = computeSubtotals(
-        partialQuery,
+        aggregate,
+        selectProject,
         rowSignature
     );
 
     final List<Aggregation> aggregations = computeAggregations(
-        partialQuery,
+        aggregate,
+        selectProject,
         plannerContext,
         rowSignature,
         virtualColumnRegistry,
@@ -383,13 +429,39 @@ public class DruidQuery
     );
 
     final DimFilter havingFilter = computeHavingFilter(
-        partialQuery,
+        havingFilterRel,
         plannerContext,
         aggregateRowSignature
     );
 
     final Grouping grouping = Grouping.create(dimensions, subtotals, aggregations, havingFilter, aggregateRowSignature);
+    return grouping;
+  }
 
+  @Nonnull
+  private static Grouping computeGrouping(
+      final PartialDruidQuery partialQuery,
+      final PlannerContext plannerContext,
+      final RowSignature rowSignature,
+      final VirtualColumnRegistry virtualColumnRegistry,
+      final boolean finalizeAggregations
+  )
+  {
+    final Aggregate aggregate = Preconditions.checkNotNull(partialQuery.getAggregate(), "aggregate");
+    final Project selectProject = partialQuery.getSelectProject();
+    final Filter havingFilterRel = partialQuery.getHavingFilter();
+
+    final Grouping grouping = buildGrouping(
+        aggregate,
+        selectProject,
+        havingFilterRel,
+        plannerContext,
+        rowSignature,
+        virtualColumnRegistry,
+        finalizeAggregations
+    );
+
+    final Project aggregateProject = partialQuery.getAggregateProject();
     if (aggregateProject == null) {
       return grouping;
     } else {
@@ -404,19 +476,21 @@ public class DruidQuery
    * @param plannerContext        planner context
    * @param rowSignature          source row signature
    * @param virtualColumnRegistry re-usable virtual column references
+   * @param typeFactory           factory for SQL types
    *
    * @return dimensions
    *
    * @throws CannotBuildQueryException if dimensions cannot be computed
    */
   private static List<DimensionExpression> computeDimensions(
-      final PartialDruidQuery partialQuery,
+      final Aggregate aggregate,
+      final Project selectProject,
       final PlannerContext plannerContext,
       final RowSignature rowSignature,
-      final VirtualColumnRegistry virtualColumnRegistry
+      final VirtualColumnRegistry virtualColumnRegistry,
+      final RelDataTypeFactory typeFactory
   )
   {
-    final Aggregate aggregate = Preconditions.checkNotNull(partialQuery.getAggregate());
     final List<DimensionExpression> dimensions = new ArrayList<>();
     final String outputNamePrefix = Calcites.findUnusedPrefixForDigits("d", rowSignature.getColumnNames());
 
@@ -425,8 +499,9 @@ public class DruidQuery
     for (int i : aggregate.getGroupSet()) {
       // Dimension might need to create virtual columns. Avoid giving it a name that would lead to colliding columns.
       final RexNode rexNode = Expressions.fromFieldAccess(
+          typeFactory,
           rowSignature,
-          partialQuery.getSelectProject(),
+          selectProject,
           i
       );
       final DruidExpression druidExpression = Expressions.toDruidExpression(plannerContext, rowSignature, rexNode);
@@ -436,12 +511,16 @@ public class DruidQuery
 
       final RelDataType dataType = rexNode.getType();
       final ColumnType outputType = Calcites.getColumnTypeForRelDataType(dataType);
-      if (Types.isNullOr(outputType, ValueType.COMPLEX)) {
-        // Can't group on unknown or COMPLEX types.
-        plannerContext.setPlanningError("SQL requires a group-by on a column of type %s that is unsupported.", outputType);
+      if (outputType == null) {
+        // Can't group on unknown types.
+        plannerContext.setPlanningError("SQL requires a group-by on a column with unknown type that is unsupported.");
         throw new CannotBuildQueryException(aggregate, rexNode);
       }
-
+      if (!outputType.getNullableStrategy().groupable()) {
+        // Can't group on 'ungroupable' types.
+        plannerContext.setPlanningError("SQL requires a group-by on a column with type [%s] that is unsupported.", outputType);
+        throw new CannotBuildQueryException(aggregate, rexNode);
+      }
       final String dimOutputName = outputNamePrefix + outputNameCounter++;
       if (!druidExpression.isSimpleExtraction()) {
         final String virtualColumn = virtualColumnRegistry.getOrCreateVirtualColumnForExpression(
@@ -466,16 +545,15 @@ public class DruidQuery
    * Builds a {@link Subtotals} object based on {@link Aggregate#getGroupSets()}.
    */
   private static Subtotals computeSubtotals(
-      final PartialDruidQuery partialQuery,
+      final Aggregate aggregate,
+      final Project selectProject,
       final RowSignature rowSignature
   )
   {
-    final Aggregate aggregate = partialQuery.getAggregate();
-
     // dimBitMapping maps from input field position to group set position (dimension number).
     final int[] dimBitMapping;
-    if (partialQuery.getSelectProject() != null) {
-      dimBitMapping = new int[partialQuery.getSelectProject().getRowType().getFieldCount()];
+    if (selectProject != null) {
+      dimBitMapping = new int[selectProject.getRowType().getFieldCount()];
     } else {
       dimBitMapping = new int[rowSignature.size()];
     }
@@ -517,7 +595,8 @@ public class DruidQuery
    * @throws CannotBuildQueryException if dimensions cannot be computed
    */
   private static List<Aggregation> computeAggregations(
-      final PartialDruidQuery partialQuery,
+      final Aggregate aggregate,
+      final Project selectProject,
       final PlannerContext plannerContext,
       final RowSignature rowSignature,
       final VirtualColumnRegistry virtualColumnRegistry,
@@ -525,7 +604,6 @@ public class DruidQuery
       final boolean finalizeAggregations
   )
   {
-    final Aggregate aggregate = Preconditions.checkNotNull(partialQuery.getAggregate());
     final List<Aggregation> aggregations = new ArrayList<>();
     final String outputNamePrefix = Calcites.findUnusedPrefixForDigits("a", rowSignature.getColumnNames());
 
@@ -537,7 +615,10 @@ public class DruidQuery
           rowSignature,
           virtualColumnRegistry,
           rexBuilder,
-          partialQuery.getSelectProject(),
+          InputAccessor.buildFor(
+              aggregate,
+              selectProject,
+              rowSignature),
           aggregations,
           aggName,
           aggCall,
@@ -572,39 +653,7 @@ public class DruidQuery
     final OffsetLimit offsetLimit = OffsetLimit.fromSort(sort);
 
     // Extract orderBy column specs.
-    final List<OrderByColumnSpec> orderBys = new ArrayList<>(sort.getChildExps().size());
-    for (int sortKey = 0; sortKey < sort.getChildExps().size(); sortKey++) {
-      final RexNode sortExpression = sort.getChildExps().get(sortKey);
-      final RelFieldCollation collation = sort.getCollation().getFieldCollations().get(sortKey);
-      final OrderByColumnSpec.Direction direction;
-      final StringComparator comparator;
-
-      if (collation.getDirection() == RelFieldCollation.Direction.ASCENDING) {
-        direction = OrderByColumnSpec.Direction.ASCENDING;
-      } else if (collation.getDirection() == RelFieldCollation.Direction.DESCENDING) {
-        direction = OrderByColumnSpec.Direction.DESCENDING;
-      } else {
-        throw new ISE("Don't know what to do with direction[%s]", collation.getDirection());
-      }
-
-      final SqlTypeName sortExpressionType = sortExpression.getType().getSqlTypeName();
-      if (SqlTypeName.NUMERIC_TYPES.contains(sortExpressionType)
-          || SqlTypeName.TIMESTAMP == sortExpressionType
-          || SqlTypeName.DATE == sortExpressionType) {
-        comparator = StringComparators.NUMERIC;
-      } else {
-        comparator = StringComparators.LEXICOGRAPHIC;
-      }
-
-      if (sortExpression.isA(SqlKind.INPUT_REF)) {
-        final RexInputRef ref = (RexInputRef) sortExpression;
-        final String fieldName = rowSignature.getColumnName(ref.getIndex());
-        orderBys.add(new OrderByColumnSpec(fieldName, direction, comparator));
-      } else {
-        // We don't support sorting by anything other than refs which actually appear in the query result.
-        throw new CannotBuildQueryException(sort, sortExpression);
-      }
-    }
+    final List<OrderByColumnSpec> orderBys = buildOrderByColumnSpecs(rowSignature, sort);
 
     // Extract any post-sort Projection.
     final Projection projection;
@@ -624,6 +673,38 @@ public class DruidQuery
     return Sorting.create(orderBys, offsetLimit, projection);
   }
 
+  public static List<OrderByColumnSpec> buildOrderByColumnSpecs(final RowSignature rowSignature, final Sort sort)
+  {
+    final List<OrderByColumnSpec> orderBys;
+    orderBys = new ArrayList<>(sort.getSortExps().size());
+    for (int sortKey = 0; sortKey < sort.getSortExps().size(); sortKey++) {
+      final RexNode sortExpression = sort.getSortExps().get(sortKey);
+      final RelFieldCollation collation = sort.getCollation().getFieldCollations().get(sortKey);
+      final OrderByColumnSpec.Direction direction;
+      final StringComparator comparator;
+
+      if (collation.getDirection() == RelFieldCollation.Direction.ASCENDING) {
+        direction = OrderByColumnSpec.Direction.ASCENDING;
+      } else if (collation.getDirection() == RelFieldCollation.Direction.DESCENDING) {
+        direction = OrderByColumnSpec.Direction.DESCENDING;
+      } else {
+        throw new ISE("Don't know what to do with direction[%s]", collation.getDirection());
+      }
+
+      comparator = Calcites.getStringComparatorForRelDataType(sortExpression.getType());
+
+      if (sortExpression.isA(SqlKind.INPUT_REF)) {
+        final RexInputRef ref = (RexInputRef) sortExpression;
+        final String fieldName = rowSignature.getColumnName(ref.getIndex());
+        orderBys.add(new OrderByColumnSpec(fieldName, direction, comparator));
+      } else {
+        // We don't support sorting by anything other than refs which actually appear in the query result.
+        throw new CannotBuildQueryException(sort, sortExpression);
+      }
+    }
+    return orderBys;
+  }
+
   /**
    * Return the {@link RowSignature} corresponding to the output of a query with the given parameters.
    */
@@ -631,10 +712,13 @@ public class DruidQuery
       final RowSignature sourceRowSignature,
       @Nullable final Projection selectProjection,
       @Nullable final Grouping grouping,
-      @Nullable final Sorting sorting
+      @Nullable final Sorting sorting,
+      @Nullable final Windowing windowing
   )
   {
-    if (sorting != null && sorting.getProjection() != null) {
+    if (windowing != null) {
+      return windowing.getSignature();
+    } else if (sorting != null && sorting.getProjection() != null) {
       return sorting.getProjection().getOutputRowSignature();
     } else if (grouping != null) {
       // Sanity check: cannot have both "grouping" and "selectProjection".
@@ -647,36 +731,15 @@ public class DruidQuery
     }
   }
 
-  private VirtualColumns getVirtualColumns(final boolean includeDimensions)
+  /**
+   * Returns the virtual columns required for a query. Does not necessarily return all virtual columns from
+   * {@link #sourceRowSignature}, only the ones actually referenced  (and any that they depend on).
+   *
+   * @param includeDimensions whether to include virtual columns refered by {@link Grouping#getDimensions()}
+   */
+  VirtualColumns computeVirtualColumns(final boolean includeDimensions)
   {
-    // 'sourceRowSignature' could provide a list of all defined virtual columns while constructing a query, but we
-    // still want to collect the set of VirtualColumns this way to ensure we only add what is still being used after
-    // the various transforms and optimizations
-    Set<VirtualColumn> virtualColumns = new HashSet<>();
-
-
-    // rewrite any "specialized" virtual column expressions as top level virtual columns so that their native
-    // implementation can be used instead of being composed as part of some expression tree in an expresson virtual
-    // column
-    Set<String> specialized = new HashSet<>();
-    final boolean forceExpressionVirtualColumns =
-        plannerContext.getPlannerConfig().isForceExpressionVirtualColumns();
-    virtualColumnRegistry.visitAllSubExpressions((expression) -> {
-      if (!forceExpressionVirtualColumns
-          && expression.getType() == DruidExpression.NodeType.SPECIALIZED) {
-        // add the expression to the top level of the registry as a standalone virtual column
-        final String name = virtualColumnRegistry.getOrCreateVirtualColumnForExpression(
-            expression,
-            expression.getDruidType()
-        );
-        specialized.add(name);
-        // replace with an identifier expression of the new virtual column name
-        return DruidExpression.ofColumn(expression.getDruidType(), name);
-      } else {
-        // do nothing
-        return expression;
-      }
-    });
+    final Set<VirtualColumn> virtualColumns = new HashSet<>();
 
     // we always want to add any virtual columns used by the query level DimFilter
     if (filter != null) {
@@ -727,9 +790,23 @@ public class DruidQuery
       }
     }
 
-    for (String columnName : specialized) {
-      if (virtualColumnRegistry.isVirtualColumnDefined(columnName)) {
-        virtualColumns.add(virtualColumnRegistry.getVirtualColumn(columnName));
+    // Include any specialized virtual columns that we need for the top-level virtualColumns.
+    final Set<VirtualColumn> checkVirtualColumns = new HashSet<>(virtualColumns);
+    while (!checkVirtualColumns.isEmpty()) {
+      final ImmutableSet<VirtualColumn> checkVirtualColumnsCopy = ImmutableSet.copyOf(checkVirtualColumns);
+      checkVirtualColumns.clear();
+
+      // Check all virtual columns that were in checkVirtualColumns to ensure we have their dependencies.
+      // If other virtual columns are encountered, add them to checkVirtualColumns so we check them recursively.
+      for (final VirtualColumn virtualColumn : checkVirtualColumnsCopy) {
+        for (final String requiredColumnName : virtualColumn.requiredColumns()) {
+          if (virtualColumnRegistry.isVirtualColumnDefined(requiredColumnName)) {
+            final VirtualColumn requiredVirtualColumn = virtualColumnRegistry.getVirtualColumn(requiredColumnName);
+            if (virtualColumns.add(requiredVirtualColumn)) {
+              checkVirtualColumns.add(requiredVirtualColumn);
+            }
+          }
+        }
       }
     }
 
@@ -740,10 +817,9 @@ public class DruidQuery
   }
 
   /**
-   * Returns a pair of DataSource and Filtration object created on the query filter. In case the, data source is
+   * Returns a pair of DataSource and Filtration object created on the query filter. In case the data source is
    * a join datasource, the datasource may be altered and left filter of join datasource may
    * be rid of time filters.
-   * TODO: should we optimize the base table filter just like we do with query filters
    */
   @VisibleForTesting
   static Pair<DataSource, Filtration> getFiltration(
@@ -753,45 +829,106 @@ public class DruidQuery
       JoinableFactoryWrapper joinableFactoryWrapper
   )
   {
-    if (!(dataSource instanceof JoinDataSource)) {
-      return Pair.of(dataSource, toFiltration(filter, virtualColumnRegistry));
+    final RowSignature rowSignature = virtualColumnRegistry.getFullRowSignature();
+
+    if (!canUseIntervalFiltering(dataSource)) {
+      return Pair.of(dataSource, Filtration.create(filter).optimizeFilterOnly(rowSignature));
     }
-    JoinDataSource joinDataSource = (JoinDataSource) dataSource;
-    if (joinDataSource.getLeftFilter() == null) {
-      return Pair.of(dataSource, toFiltration(filter, virtualColumnRegistry));
+
+    // Time filters within the datasource narrow the query intervals too, which lets the broker prune segments.
+    final Filtration queryFiltration =
+        Filtration.create(filter, getBaseIntervals(dataSource, rowSignature)).optimize(rowSignature);
+
+    if (dataSource instanceof JoinDataSource join && join.getLeftFilter() != null) {
+      // Strip the time filters from the left filter, since the query intervals now carry them.
+      final JoinDataSource newDataSource = JoinDataSource.create(
+          join.getLeft(),
+          join.getRight(),
+          join.getRightPrefix(),
+          join.getConditionAnalysis(),
+          join.getJoinType(),
+          Filtration.create(join.getLeftFilter()).optimize(rowSignature).getDimFilter(),
+          joinableFactoryWrapper,
+          join.getJoinAlgorithm()
+      );
+      return Pair.of(newDataSource, queryFiltration);
+    } else {
+      return Pair.of(dataSource, queryFiltration);
     }
-    //TODO: We should avoid promoting the time filter as interval for right outer and full outer joins. This is not
-    // done now as we apply the intervals to left base table today irrespective of the join type.
-
-    // If the join is left or inner, we can pull the intervals up to the query. This is done
-    // so that broker can prune the segments to query.
-    Filtration leftFiltration = Filtration.create(joinDataSource.getLeftFilter())
-                                          .optimize(virtualColumnRegistry.getFullRowSignature());
-    // Adds the intervals from the join left filter to query filtration
-    Filtration queryFiltration = Filtration.create(filter, leftFiltration.getIntervals())
-                                           .optimize(virtualColumnRegistry.getFullRowSignature());
-
-
-    JoinDataSource newDataSource = JoinDataSource.create(
-        joinDataSource.getLeft(),
-        joinDataSource.getRight(),
-        joinDataSource.getRightPrefix(),
-        joinDataSource.getConditionAnalysis(),
-        joinDataSource.getJoinType(),
-        leftFiltration.getDimFilter(),
-        joinableFactoryWrapper
-    );
-    return Pair.of(newDataSource, queryFiltration);
   }
 
-  private static Filtration toFiltration(DimFilter filter, VirtualColumnRegistry virtualColumnRegistry)
+  /**
+   * Returns the intervals that time filters within the given datasource restrict its {@code __time} to, or eternity
+   * if there are none. Filters along a single path are intersected, and the arms of a union are combined. Relies on
+   * every layer passing {@code __time} through unchanged, as the datasources we plan do.
+   */
+  private static List<Interval> getBaseIntervals(final DataSource dataSource, final RowSignature rowSignature)
   {
-    return Filtration.create(filter).optimize(virtualColumnRegistry.getFullRowSignature());
+    if (dataSource instanceof FilteredDataSource filtered) {
+      // Filtration intersects the filter's time bounds with the intervals it is created with.
+      return Filtration.create(filtered.getFilter(), getBaseIntervals(filtered.getBase(), rowSignature))
+                       .optimize(rowSignature)
+                       .getIntervals();
+    } else if (dataSource instanceof JoinDataSource join) {
+      // Right-hand columns are prefixed, so __time is the left-hand side's.
+      return Filtration.create(join.getLeftFilter(), getBaseIntervals(join.getLeft(), rowSignature))
+                       .optimize(rowSignature)
+                       .getIntervals();
+    } else if (dataSource instanceof UnionDataSource) {
+      final List<Interval> intervals = new ArrayList<>();
+      for (final DataSource arm : dataSource.getChildren()) {
+        intervals.addAll(getBaseIntervals(arm, rowSignature));
+      }
+      return JodaUtils.condenseIntervals(intervals);
+    } else if (dataSource instanceof UnnestDataSource unnest) {
+      return getBaseIntervals(unnest.getBase(), rowSignature);
+    } else if (dataSource instanceof ProjectDataSource project) {
+      return getBaseIntervals(project.getBase(), rowSignature);
+    } else {
+      return Intervals.ONLY_ETERNITY;
+    }
+  }
+
+  /**
+   * Returns the filter ANDed with a filter on {@code __time} matching the time condition, if the datasource is
+   * table-based.
+   */
+  @Nullable
+  @VisibleForTesting
+  static DimFilter withTimeCondition(
+      final DataSource dataSource,
+      @Nullable final DimFilter filter,
+      @Nullable final List<Interval> timeCondition
+  )
+  {
+    if (timeCondition == null || !canUseIntervalFiltering(dataSource)) {
+      return filter;
+    }
+
+    final RangeRefKey timeKey = new RangeRefKey(ColumnHolder.TIME_COLUMN_NAME, ColumnType.LONG);
+    final List<DimFilter> timeFilters = new ArrayList<>();
+    for (final Interval interval : timeCondition) {
+      timeFilters.add(Ranges.interval(timeKey, interval));
+    }
+    return DimFilters.conjunction(
+        filter,
+        timeFilters.size() == 1 ? timeFilters.getFirst() : DimFilters.or(timeFilters)
+    );
+  }
+
+  /**
+   * Whether the given datasource can make use of "intervals" based filtering. The is true for anything based on
+   * regular tables ({@link TableDataSource}).
+   */
+  private static boolean canUseIntervalFiltering(final DataSource dataSource)
+  {
+    ExecutionVertex ev = ExecutionVertex.ofDataSource(dataSource);
+    return ev.isTableBased();
   }
 
   /**
    * Whether the provided combination of dataSource, filtration, and queryGranularity is safe to use in queries.
-   *
+   * <p>
    * Necessary because some combinations are unsafe, mainly because they would lead to the creation of too many
    * time-granular buckets during query processing.
    */
@@ -802,12 +939,13 @@ public class DruidQuery
   )
   {
     if (Granularities.ALL.equals(queryGranularity)) {
-      // Always OK: no storage adapter has problem with ALL.
+      // Always OK: no cursor factory has problem with ALL.
       return true;
     }
 
-    if (DataSourceAnalysis.forDataSource(dataSource).isConcreteTableBased()) {
-      // Always OK: queries on concrete tables (regular Druid datasources) use segment-based storage adapters
+    ExecutionVertex ev = ExecutionVertex.ofDataSource(dataSource);
+    if (ev.isProcessable() && ev.isTableBased()) {
+      // Always OK: queries on concrete tables (regular Druid datasources) use segment-based cursors
       // (IncrementalIndex or QueryableIndex). These clip query interval to data interval, making wide query
       // intervals safer. They do not have special checks for granularity and interval safety.
       return true;
@@ -817,9 +955,9 @@ public class DruidQuery
     // count on interval-clipping to save us.
 
     for (final Interval filtrationInterval : filtration.getIntervals()) {
-      // Query may be using RowBasedStorageAdapter. We don't know for sure, so check
-      // RowBasedStorageAdapter#isQueryGranularityAllowed to be safe.
-      if (!RowBasedStorageAdapter.isQueryGranularityAllowed(filtrationInterval, queryGranularity)) {
+      // Query may be using RowBasedCursorFactory. We don't know for sure, so check if the interval is too big
+
+      if (Intervals.ETERNITY.equals(filtrationInterval)) {
         return false;
       }
 
@@ -839,6 +977,14 @@ public class DruidQuery
   public DataSource getDataSource()
   {
     return dataSource;
+  }
+
+  /**
+   * Returns the context this query was planned using.
+   */
+  public PlannerContext getPlannerContext()
+  {
+    return plannerContext;
   }
 
   @Nullable
@@ -881,6 +1027,11 @@ public class DruidQuery
       }
     }
 
+    final WindowOperatorQuery operatorQuery = toWindowQuery();
+    if (operatorQuery != null) {
+      return operatorQuery;
+    }
+
     final TimeBoundaryQuery timeBoundaryQuery = toTimeBoundaryQuery();
     if (timeBoundaryQuery != null) {
       return timeBoundaryQuery;
@@ -901,9 +1052,14 @@ public class DruidQuery
       return groupByQuery;
     }
 
-    final ScanQuery scanQuery = toScanQuery();
+    final ScanQuery scanQuery = toScanQuery(true);
     if (scanQuery != null) {
       return scanQuery;
+    }
+
+    final WindowOperatorQuery scanAndSortQuery = toScanAndSortQuery();
+    if (scanAndSortQuery != null) {
+      return scanAndSortQuery;
     }
 
     throw new CannotBuildQueryException("Cannot convert query parts into an actual query");
@@ -917,11 +1073,12 @@ public class DruidQuery
   @Nullable
   private TimeBoundaryQuery toTimeBoundaryQuery()
   {
-    if (!plannerContext.engineHasFeature(EngineFeature.TIME_BOUNDARY_QUERY)
+    if (!plannerContext.featureAvailable(EngineFeature.TIME_BOUNDARY_QUERY)
         || grouping == null
         || grouping.getSubtotals().hasEffect(grouping.getDimensionSpecs())
         || grouping.getHavingFilter() != null
-        || selectProjection != null) {
+        || selectProjection != null
+        || windowing != null) {
       return null;
     }
 
@@ -950,18 +1107,24 @@ public class DruidQuery
       }
       final Pair<DataSource, Filtration> dataSourceFiltrationPair = getFiltration(
           dataSource,
-          filter,
+          withTimeCondition(dataSource, filter, plannerContext.getTimeCondition()),
           virtualColumnRegistry,
           plannerContext.getJoinableFactoryWrapper()
       );
+
+      if (!computeVirtualColumns(true).isEmpty()) {
+        // timeBoundary query does not support virtual columns.
+        return null;
+      }
+
       final DataSource newDataSource = dataSourceFiltrationPair.lhs;
       final Filtration filtration = dataSourceFiltrationPair.rhs;
       String bound = minTime ? TimeBoundaryQuery.MIN_TIME : TimeBoundaryQuery.MAX_TIME;
       Map<String, Object> context = new HashMap<>(plannerContext.queryContextMap());
       if (minTime) {
-        context.put(TimeBoundaryQuery.MIN_TIME_ARRAY_OUTPUT_NAME, aggregatorFactory.getName());
+        QueryContextParameters.MIN_TIME_ARRAY_OUTPUT_NAME.set(context, aggregatorFactory.getName());
       } else {
-        context.put(TimeBoundaryQuery.MAX_TIME_ARRAY_OUTPUT_NAME, aggregatorFactory.getName());
+        QueryContextParameters.MAX_TIME_ARRAY_OUTPUT_NAME.set(context, aggregatorFactory.getName());
       }
       return new TimeBoundaryQuery(
           newDataSource,
@@ -982,10 +1145,11 @@ public class DruidQuery
   @Nullable
   private TimeseriesQuery toTimeseriesQuery()
   {
-    if (!plannerContext.engineHasFeature(EngineFeature.TIMESERIES_QUERY)
+    if (!plannerContext.featureAvailable(EngineFeature.TIMESERIES_QUERY)
         || grouping == null
         || grouping.getSubtotals().hasEffect(grouping.getDimensionSpecs())
-        || grouping.getHavingFilter() != null) {
+        || grouping.getHavingFilter() != null
+        || windowing != null) {
       return null;
     }
 
@@ -1005,15 +1169,20 @@ public class DruidQuery
       final DimensionExpression dimensionExpression = Iterables.getOnlyElement(grouping.getDimensions());
       queryGranularity = Expressions.toQueryGranularity(
           dimensionExpression.getDruidExpression(),
-          plannerContext.getExprMacroTable()
+          plannerContext.getExpressionParser()
       );
 
       if (queryGranularity == null) {
         // Timeseries only applies if the single dimension is granular __time.
         return null;
       }
-      theContext.put(
-          TimeseriesQuery.CTX_TIMESTAMP_RESULT_FIELD,
+
+      if (!plannerContext.isUseGranularity() && !Granularities.ALL.equals(queryGranularity)) {
+        return null;
+      }
+
+      QueryContextParameters.TIMESTAMP_RESULT_FIELD.set(
+          theContext,
           Iterables.getOnlyElement(grouping.getDimensions()).toDimensionSpec().getOutputName()
       );
       if (sorting != null) {
@@ -1055,13 +1224,14 @@ public class DruidQuery
     // Alternatively, the timeseries query should return empty buckets, even with ALL granularity when timeseries query
     // was originally a groupBy query, but with the grouping dimensions removed away in Grouping#applyProject
     if (!Granularities.ALL.equals(queryGranularity) || grouping.hasGroupingDimensionsDropped()) {
-      theContext.put(TimeseriesQuery.SKIP_EMPTY_BUCKETS, true);
+      QueryContextParameters.SKIP_EMPTY_BUCKETS.set(theContext, true);
     }
     theContext.putAll(plannerContext.queryContextMap());
 
+    final VirtualColumns virtualColumns = computeVirtualColumns(false);
     final Pair<DataSource, Filtration> dataSourceFiltrationPair = getFiltration(
         dataSource,
-        filter,
+        withTimeCondition(dataSource, filter, plannerContext.getTimeCondition()),
         virtualColumnRegistry,
         plannerContext.getJoinableFactoryWrapper()
     );
@@ -1081,7 +1251,7 @@ public class DruidQuery
         newDataSource,
         filtration.getQuerySegmentSpec(),
         descending,
-        getVirtualColumns(false),
+        virtualColumns,
         filtration.getDimFilter(),
         queryGranularity,
         grouping.getAggregatorFactories(),
@@ -1100,12 +1270,12 @@ public class DruidQuery
   private TopNQuery toTopNQuery()
   {
     // Must be allowed by the QueryMaker.
-    if (!plannerContext.engineHasFeature(EngineFeature.TOPN_QUERY)) {
+    if (!plannerContext.featureAvailable(EngineFeature.TOPN_QUERY)) {
       return null;
     }
 
     // Must have GROUP BY one column, no GROUPING SETS, ORDER BY ≤ 1 column, LIMIT > 0 and ≤ maxTopNLimit,
-    // no OFFSET, no HAVING.
+    // no OFFSET, no HAVING, no windowing.
     final boolean topNOk = grouping != null
                            && grouping.getDimensions().size() == 1
                            && !grouping.getSubtotals().hasEffect(grouping.getDimensionSpecs())
@@ -1116,15 +1286,17 @@ public class DruidQuery
                                && sorting.getOffsetLimit().getLimit() <= plannerContext.getPlannerConfig()
                                                                                        .getMaxTopNLimit()
                                && !sorting.getOffsetLimit().hasOffset())
-                           && grouping.getHavingFilter() == null;
+                           && grouping.getHavingFilter() == null
+                           && windowing == null;
 
     if (!topNOk) {
       return null;
     }
 
     final DimensionSpec dimensionSpec = Iterables.getOnlyElement(grouping.getDimensions()).toDimensionSpec();
-    // grouping col cannot be type array
-    if (dimensionSpec.getOutputType().isArray()) {
+    // TopN queries can't handle arrays or complex dimensions. Return's null so that they get planned as a group by query
+    // which does support complex and array dimensions
+    if (!dimensionSpec.getOutputType().isPrimitive()) {
       return null;
     }
     final OrderByColumnSpec limitColumn;
@@ -1140,7 +1312,11 @@ public class DruidQuery
     final TopNMetricSpec topNMetricSpec;
 
     if (limitColumn.getDimension().equals(dimensionSpec.getOutputName())) {
-      // DimensionTopNMetricSpec is exact; always return it even if allowApproximate is false.
+      // ORDER BY dimension. Gives exact results, so no need to check useApproximateTopN.
+      // However, we only go down this path if useLexicographicTopN is true.
+      if (!plannerContext.getPlannerConfig().isUseLexicographicTopN()) {
+        return null;
+      }
       final DimensionTopNMetricSpec baseMetricSpec = new DimensionTopNMetricSpec(
           null,
           limitColumn.getDimensionComparator()
@@ -1158,9 +1334,10 @@ public class DruidQuery
       return null;
     }
 
+    final VirtualColumns virtualColumns = computeVirtualColumns(true);
     final Pair<DataSource, Filtration> dataSourceFiltrationPair = getFiltration(
         dataSource,
-        filter,
+        withTimeCondition(dataSource, filter, plannerContext.getTimeCondition()),
         virtualColumnRegistry,
         plannerContext.getJoinableFactoryWrapper()
     );
@@ -1174,7 +1351,7 @@ public class DruidQuery
 
     return new TopNQuery(
         newDataSource,
-        getVirtualColumns(true),
+        virtualColumns,
         dimensionSpec,
         topNMetricSpec,
         Ints.checkedCast(sorting.getOffsetLimit().getLimit()),
@@ -1195,7 +1372,7 @@ public class DruidQuery
   @Nullable
   private GroupByQuery toGroupByQuery()
   {
-    if (grouping == null) {
+    if (grouping == null || windowing != null) {
       return null;
     }
 
@@ -1204,9 +1381,10 @@ public class DruidQuery
       return null;
     }
 
+    final VirtualColumns virtualColumns = computeVirtualColumns(true);
     final Pair<DataSource, Filtration> dataSourceFiltrationPair = getFiltration(
         dataSource,
-        filter,
+        withTimeCondition(dataSource, filter, plannerContext.getTimeCondition()),
         virtualColumnRegistry,
         plannerContext.getJoinableFactoryWrapper()
     );
@@ -1232,7 +1410,7 @@ public class DruidQuery
     GroupByQuery query = new GroupByQuery(
         newDataSource,
         filtration.getQuerySegmentSpec(),
-        getVirtualColumns(true),
+        virtualColumns,
         filtration.getDimFilter(),
         Granularities.ALL,
         grouping.getDimensionSpecs(),
@@ -1272,11 +1450,11 @@ public class DruidQuery
     // the query generated by "explain plan for select ..." doesn't match to the native query ACTUALLY being executed,
     // the granularity and dimensions are slightly different.
     // now, part of the query plan logic is handled in GroupByStrategyV2.
-    if (!grouping.getDimensions().isEmpty()) {
+    if (!grouping.getDimensions().isEmpty() && plannerContext.isUseGranularity()) {
       for (DimensionExpression dimensionExpression : grouping.getDimensions()) {
         Granularity granularity = Expressions.toQueryGranularity(
             dimensionExpression.getDruidExpression(),
-            plannerContext.getExprMacroTable()
+            plannerContext.getExpressionParser()
         );
         if (granularity == null || !canUseQueryGranularity(dataSource, filtration, granularity)) {
           // Can't, or won't, convert this dimension to a query granularity.
@@ -1285,19 +1463,22 @@ public class DruidQuery
         if (queryGranularity != null) {
           // group by more than one timestamp_floor
           // eg: group by timestamp_floor(__time to DAY),timestamp_floor(__time, to HOUR)
-          queryGranularity = null;
+          theContext.clear();
           break;
         }
         queryGranularity = granularity;
         int timestampDimensionIndexInDimensions = grouping.getDimensions().indexOf(dimensionExpression);
 
         // these settings will only affect the most inner query sent to the down streaming compute nodes
-        theContext.put(GroupByQuery.CTX_TIMESTAMP_RESULT_FIELD, dimensionExpression.getOutputName());
-        theContext.put(GroupByQuery.CTX_TIMESTAMP_RESULT_FIELD_INDEX, timestampDimensionIndexInDimensions);
+        QueryContextParameters.TIMESTAMP_RESULT_FIELD.set(theContext, dimensionExpression.getOutputName());
+        QueryContextParameters.TIMESTAMP_RESULT_FIELD_IN_ORIGINAL_DIMENSIONS.set(
+            theContext,
+            timestampDimensionIndexInDimensions
+        );
 
         try {
-          theContext.put(
-              GroupByQuery.CTX_TIMESTAMP_RESULT_FIELD_GRANULARITY,
+          QueryContextParameters.TIMESTAMP_RESULT_FIELD_GRANULARITY.set(
+              theContext,
               plannerContext.getJsonMapper().writeValueAsString(queryGranularity)
           );
         }
@@ -1306,44 +1487,205 @@ public class DruidQuery
         }
       }
     }
-    if (queryGranularity == null) {
+
+    if (grouping.getDimensions().isEmpty() && grouping.hasGroupingDimensionsDropped()) {
+      // GROUP BY ().
+      QueryContextParameters.HAS_DROPPED_DIMENSIONS.set(theContext, grouping.hasGroupingDimensionsDropped());
+    }
+
+    if (theContext.isEmpty()) {
       return query;
     }
     return query.withOverriddenContext(theContext);
   }
 
   /**
-   * Return this query as a Scan query, or null if this query is not compatible with Scan.
+   * Return this query as a {@link WindowOperatorQuery}, or null if this query cannot be run that way.
    *
    * @return query or null
    */
   @Nullable
-  private ScanQuery toScanQuery()
+  private WindowOperatorQuery toWindowQuery()
   {
-    if (grouping != null) {
-      // Scan cannot GROUP BY.
+    if (windowing == null) {
+      return null;
+    }
+
+    // This is not yet supported
+    if (dataSource.isProcessable()) {
+      return null;
+    }
+    if (dataSource instanceof TableDataSource) {
+      // We need a scan query to pull the results up for us before applying the window
+      // Returning null here to ensure that the planner generates that alternative
+      return null;
+    }
+
+    // all virtual cols are needed - these columns are only referenced from the aggregates
+    VirtualColumns virtualColumns = virtualColumnRegistry.build(Collections.emptySet());
+    final List<OperatorFactory> operators;
+
+    if (virtualColumns.isEmpty()) {
+      operators = windowing.getOperators();
+    } else {
+      operators = ImmutableList.<OperatorFactory>builder()
+          .add(new ScanOperatorFactory(
+              null,
+              null,
+              null,
+              null,
+              virtualColumns,
+              null))
+          .addAll(windowing.getOperators())
+          .build();
+    }
+    // if planning in native set to null
+    // if planning in MSQ set to empty list
+    // This would cause MSQ queries to plan as
+    // Window over an inner scan and avoid
+    // leaf operators
+    boolean pushLeafOperator =
+        plannerContext.queryContext().getOrDefault(QueryContextParameters.ENABLE_RAC_OVER_WIRE)
+        && !plannerContext.featureAvailable(EngineFeature.WINDOW_LEAF_OPERATOR);
+
+    final Pair<DataSource, Filtration> dataSourceFiltrationPair = getFiltration(
+        dataSource,
+        withTimeCondition(dataSource, filter, plannerContext.getTimeCondition()),
+        virtualColumnRegistry,
+        plannerContext.getJoinableFactoryWrapper()
+    );
+
+    return new WindowOperatorQuery(
+        dataSourceFiltrationPair.lhs,
+        new LegacySegmentSpec(dataSourceFiltrationPair.rhs.getIntervals()),
+        plannerContext.queryContextMap(),
+        windowing.getSignature(),
+        operators,
+        pushLeafOperator ? null : ImmutableList.of()
+    );
+  }
+
+  /**
+   * Create an OperatorQuery which runs an order on top of a scan.
+   */
+  @Nullable
+  private WindowOperatorQuery toScanAndSortQuery()
+  {
+    if (sorting == null
+        || sorting.getOrderBys().isEmpty()
+        || (sorting.getProjection() != null && !sorting.getProjection().getVirtualColumns().isEmpty())) {
+      return null;
+    }
+
+    ScanQuery scan = toScanQuery(false);
+    if (scan == null) {
+      return null;
+    }
+
+    if (dataSource.isProcessable()) {
+      // Currently only non-time orderings of subqueries are allowed.
+      setPlanningErrorOrderByNonTimeIsUnsupported();
+      return null;
+    }
+
+    QueryDataSource newDataSource = new QueryDataSource(scan);
+    List<ColumnWithDirection> sortColumns = getColumnWithDirectionsFromOrderBys(sorting.getOrderBys());
+    RowSignature signature = getOutputRowSignature();
+    List<OperatorFactory> operators = new ArrayList<>();
+
+    operators.add(new NaiveSortOperatorFactory(sortColumns));
+
+
+    final Projection projection = sorting.getProjection();
+
+    final org.apache.druid.query.operator.OffsetLimit offsetLimit = sorting.getOffsetLimit().isNone()
+        ? null
+        : sorting.getOffsetLimit().toOperatorOffsetLimit();
+
+    final List<String> projectedColumns = projection == null
+        ? null
+        : projection.getOutputRowSignature().getColumnNames();
+
+    if (offsetLimit != null || projectedColumns != null) {
+      operators.add(
+          new ScanOperatorFactory(
+              null,
+              null,
+              offsetLimit,
+              projectedColumns,
+              null,
+              null
+          )
+      );
+    }
+
+    return new WindowOperatorQuery(
+        newDataSource,
+        new LegacySegmentSpec(scan.getIntervals()),
+        plannerContext.queryContextMap(),
+        signature,
+        operators,
+        null
+    );
+  }
+
+  private void setPlanningErrorOrderByNonTimeIsUnsupported()
+  {
+    List<String> orderByColumnNames = sorting.getOrderBys()
+        .stream().map(OrderByColumnSpec::getDimension)
+        .collect(Collectors.toList());
+    plannerContext.setPlanningError(
+        "SQL query requires ordering a table by non-time column [%s], which is not supported.",
+        orderByColumnNames
+    );
+  }
+
+  private ArrayList<ColumnWithDirection> getColumnWithDirectionsFromOrderBys(List<OrderByColumnSpec> orderBys)
+  {
+    ArrayList<ColumnWithDirection> ordering = new ArrayList<>();
+    for (OrderByColumnSpec orderBySpec : orderBys) {
+      Direction direction = orderBySpec.getDirection() == OrderByColumnSpec.Direction.ASCENDING
+          ? ColumnWithDirection.Direction.ASC
+          : ColumnWithDirection.Direction.DESC;
+      ordering.add(new ColumnWithDirection(orderBySpec.getDimension(), direction));
+    }
+    return ordering;
+  }
+
+  /**
+   * Return this query as a Scan query, or null if this query is not compatible with Scan.
+   * @param considerSorting can be used to ignore the current sorting requirements {@link #toScanAndSortQuery()} uses it to produce the non-sorted part
+   * @return query or null
+   */
+  @Nullable
+  private ScanQuery toScanQuery(final boolean considerSorting)
+  {
+    if (grouping != null || windowing != null) {
+      // Scan cannot GROUP BY or do windows.
       return null;
     }
 
     if (outputRowSignature.size() == 0) {
       // Should never do a scan query without any columns that we're interested in. This is probably a planner bug.
-      throw new ISE("Cannot convert to Scan query without any columns.");
+      this.plannerContext.setPlanningError("Cannot convert to Scan query without any columns.");
+      return null;
     }
 
+    final VirtualColumns virtualColumns = computeVirtualColumns(true);
     final Pair<DataSource, Filtration> dataSourceFiltrationPair = getFiltration(
         dataSource,
-        filter,
+        withTimeCondition(dataSource, filter, plannerContext.getTimeCondition()),
         virtualColumnRegistry,
         plannerContext.getJoinableFactoryWrapper()
     );
     final DataSource newDataSource = dataSourceFiltrationPair.lhs;
     final Filtration filtration = dataSourceFiltrationPair.rhs;
 
-    final List<ScanQuery.OrderBy> orderByColumns;
+    final List<OrderBy> orderByColumns;
     long scanOffset = 0L;
     long scanLimit = 0L;
 
-    if (sorting != null) {
+    if (considerSorting && sorting != null) {
       scanOffset = sorting.getOffsetLimit().getOffset();
 
       if (sorting.getOffsetLimit().hasLimit()) {
@@ -1359,43 +1701,38 @@ public class DruidQuery
 
       orderByColumns = sorting.getOrderBys().stream().map(
           orderBy ->
-              new ScanQuery.OrderBy(
+              new OrderBy(
                   orderBy.getDimension(),
                   orderBy.getDirection() == OrderByColumnSpec.Direction.DESCENDING
-                  ? ScanQuery.Order.DESCENDING
-                  : ScanQuery.Order.ASCENDING
+                  ? Order.DESCENDING
+                  : Order.ASCENDING
               )
       ).collect(Collectors.toList());
+
     } else {
       orderByColumns = Collections.emptyList();
     }
 
-    if (!plannerContext.engineHasFeature(EngineFeature.SCAN_ORDER_BY_NON_TIME) && !orderByColumns.isEmpty()) {
-      if (orderByColumns.size() > 1 || !ColumnHolder.TIME_COLUMN_NAME.equals(orderByColumns.get(0).getColumnName())) {
-        // Cannot handle this ordering.
-        // Scan cannot ORDER BY non-time columns.
-        plannerContext.setPlanningError(
-            "SQL query requires order by non-time column %s that is not supported.",
-            orderByColumns
-        );
+    if (!plannerContext.featureAvailable(EngineFeature.SCAN_ORDER_BY_NON_TIME) && !orderByColumns.isEmpty()) {
+      if (orderByColumns.size() > 1
+          || orderByColumns.stream().anyMatch(orderBy -> !orderBy.getColumnName().equals(ColumnHolder.TIME_COLUMN_NAME))) {
+        if (!plannerContext.queryContext().isDecoupledMode()) {
+          // We cannot handle this ordering, but we encounter this ordering as part of the exploration of the volcano
+          // planner, which means that the query that we are looking right now might only be doing this as one of the
+          // potential branches of exploration rather than being a semantic requirement of the query itself.  So, it is
+          // not safe to send an error message telling the end-user exactly what is happening, instead we need to set the
+          // planning error and hope.
+          setPlanningErrorOrderByNonTimeIsUnsupported();
+        }
         return null;
-      }
-      if (!dataSource.isConcrete()) {
-        // Cannot handle this ordering.
-        // Scan cannot ORDER BY non-time columns.
-        plannerContext.setPlanningError(
-            "SQL query is a scan and requires order by on a datasource[%s], which is not supported.",
-            dataSource
-        );
-        return null;
+
       }
     }
 
-    // Compute the list of columns to select, sorted and deduped.
-    final SortedSet<String> scanColumns = new TreeSet<>(outputRowSignature.getColumnNames());
+    // Deduplicate column list
+    final Set<String> scanColumns = new LinkedHashSet<>(outputRowSignature.getColumnNames());
     orderByColumns.forEach(column -> scanColumns.add(column.getColumnName()));
 
-    final VirtualColumns virtualColumns = getVirtualColumns(true);
     final ImmutableList<String> scanColumnsList = ImmutableList.copyOf(scanColumns);
 
     return new ScanQuery(
@@ -1410,55 +1747,92 @@ public class DruidQuery
         orderByColumns,
         filtration.getDimFilter(),
         scanColumnsList,
-        false,
-        withScanSignatureIfNeeded(
-            virtualColumns,
-            scanColumnsList,
-            plannerContext.queryContextMap()
-        )
+        plannerContext.queryContextMap(),
+        outputRowSignature.buildSafeSignature(scanColumnsList).getColumnTypes()
     );
   }
 
+  public DimFilter getFilter()
+  {
+    return filter;
+  }
+
   /**
-   * Returns a copy of "queryContext" with {@link #CTX_SCAN_SIGNATURE} added if the execution context has the
-   * {@link EngineFeature#SCAN_NEEDS_SIGNATURE} feature.
+   * Returns the virtual columns held by this query, which must be a Scan.
    */
-  private Map<String, Object> withScanSignatureIfNeeded(
-      final VirtualColumns virtualColumns,
-      final List<String> scanColumns,
-      final Map<String, Object> queryContext
+  public VirtualColumns getScanVirtualColumns()
+  {
+    if (query instanceof ScanQuery scanQuery) {
+      return scanQuery.getVirtualColumns();
+    } else {
+      throw DruidException.defensive("Expected a scan query, but got type[%s]", query.getType());
+    }
+  }
+
+  /**
+   * Wraps a datasource in a {@link FilteredDataSource} and a {@link ProjectDataSource}, so a filter and a projection
+   * can be applied without a subquery. The filter goes underneath the projection, unless it reads one of the
+   * projection's virtual columns, in which case it goes on top.
+   *
+   * @param dataSource     datasource to wrap
+   * @param rowSignature   signature of {@code dataSource}
+   * @param filter         filter to apply, or null for none
+   * @param virtualColumns virtual columns to project, or empty for none
+   */
+  public static DataSource makeFilteredProjectedDataSource(
+      final DataSource dataSource,
+      final RowSignature rowSignature,
+      @Nullable final DimFilter filter,
+      final VirtualColumns virtualColumns
   )
   {
-    if (!plannerContext.engineHasFeature(EngineFeature.SCAN_NEEDS_SIGNATURE)) {
-      return queryContext;
-    }
-    // Compute the signature of the columns that we are selecting.
-    final RowSignature.Builder scanSignatureBuilder = RowSignature.builder();
+    final boolean filterOnTop = filterReadsVirtualColumns(filter, virtualColumns);
 
-    for (final String columnName : scanColumns) {
-      final ColumnCapabilities capabilities =
-          virtualColumns.getColumnCapabilitiesWithFallback(sourceRowSignature, columnName);
+    DataSource retVal = dataSource;
 
-      if (capabilities == null) {
-        // No type for this column. This is a planner bug.
-        throw new ISE("No type for column [%s]", columnName);
-      }
-
-      scanSignatureBuilder.add(columnName, capabilities.toColumnType());
+    if (filter != null && !filterOnTop) {
+      retVal = makeFilteredDataSource(retVal, rowSignature, filter);
     }
 
-    final RowSignature signature = scanSignatureBuilder.build();
+    if (!virtualColumns.isEmpty()) {
+      retVal = new ProjectDataSource(retVal, virtualColumns);
+    }
 
-    try {
-      Map<String, Object> revised = new HashMap<>(queryContext);
-      revised.put(
-          CTX_SCAN_SIGNATURE,
-          plannerContext.getJsonMapper().writeValueAsString(signature)
-      );
-      return revised;
+    if (filterOnTop) {
+      retVal = makeFilteredDataSource(retVal, virtualColumns.wrappedSignature(rowSignature, rowSignature), filter);
     }
-    catch (JsonProcessingException e) {
-      throw new RuntimeException(e);
-    }
+
+    return retVal;
+  }
+
+  /**
+   * Whether the given filter reads any of the given virtual columns.
+   */
+  public static boolean filterReadsVirtualColumns(
+      @Nullable final DimFilter filter,
+      final VirtualColumns virtualColumns
+  )
+  {
+    return filter != null && filter.getRequiredColumns().stream().anyMatch(virtualColumns::exists);
+  }
+
+  /**
+   * Wraps a datasource in a {@link FilteredDataSource}. The filter is optimized, but time filters are left in place
+   * rather than being moved into query intervals, since the datasource has no intervals of its own.
+   *
+   * @param dataSource   datasource to wrap
+   * @param rowSignature signature of {@code dataSource}
+   * @param filter       filter to apply
+   */
+  public static FilteredDataSource makeFilteredDataSource(
+      final DataSource dataSource,
+      final RowSignature rowSignature,
+      final DimFilter filter
+  )
+  {
+    return FilteredDataSource.create(
+        dataSource,
+        Filtration.create(filter).optimizeFilterOnly(rowSignature).getDimFilter()
+    );
   }
 }

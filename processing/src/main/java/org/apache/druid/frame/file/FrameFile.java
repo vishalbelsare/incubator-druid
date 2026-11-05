@@ -20,7 +20,12 @@
 package org.apache.druid.frame.file;
 
 import org.apache.datasketches.memory.Memory;
+import org.apache.druid.error.DruidException;
 import org.apache.druid.frame.Frame;
+import org.apache.druid.frame.channel.ByteTracker;
+import org.apache.druid.frame.channel.ReadableByteChunksFrameChannel;
+import org.apache.druid.frame.wire.FrameCompression;
+import org.apache.druid.java.util.common.ByteBufferUtils;
 import org.apache.druid.java.util.common.FileUtils;
 import org.apache.druid.java.util.common.IAE;
 import org.apache.druid.java.util.common.IOE;
@@ -29,6 +34,8 @@ import org.apache.druid.java.util.common.MappedByteBufferHandler;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.io.Closer;
 import org.apache.druid.java.util.common.logger.Logger;
+import org.apache.druid.query.rowsandcols.RowsAndColumns;
+import org.apache.druid.query.rowsandcols.semantic.WireTransferable;
 import org.apache.druid.segment.ReferenceCountingCloseableObject;
 import org.apache.druid.utils.CloseableUtils;
 
@@ -47,7 +54,7 @@ import java.util.EnumSet;
  *
  * Frame files are written by {@link FrameFileWriter}.
  *
- * Frame files can optionally be partitioned, by providing partition numbers to the {@link FrameFileWriter#writeFrame}
+ * Frame files can optionally be partitioned, by providing partition numbers to the {@link FrameFileWriter#write}
  * method when creating the file. Partitions are contiguous within the frame file.
  *
  * Frame files can contain up to {@link Integer#MAX_VALUE} frames. Generally, frames are on the order of 1 MB in size,
@@ -69,6 +76,9 @@ import java.util.EnumSet;
  *
  * Instances of this class are not thread-safe. For sharing across threads, use {@link #newReference()} to create
  * an additional reference.
+ *
+ * @see FrameFileWriter writer for this file format
+ * @see ReadableByteChunksFrameChannel streaming reader for this file format
  */
 public class FrameFile implements Closeable
 {
@@ -84,10 +94,8 @@ public class FrameFile implements Closeable
 
   private final File file;
   private final long fileLength;
-  private final Memory footerMemory; // Footer is everything from the final MARKER_NO_MORE_FRAMES to EOF.
+  private final FrameFileFooter frameFileFooter; // Footer is everything from the final MARKER_NO_MORE_FRAMES to EOF.
   private final int maxMmapSize;
-  private final int numFrames;
-  private final int numPartitions;
   private final ReferenceCountingCloseableObject<Closeable> referenceCounter;
   private final Closeable referenceReleaser;
 
@@ -116,21 +124,17 @@ public class FrameFile implements Closeable
   private FrameFile(
       final File file,
       final long fileLength,
-      final Memory footerMemory,
+      final FrameFileFooter frameFileFooter,
       @Nullable final Memory wholeFileMemory,
       final int maxMmapSize,
-      final int numFrames,
-      final int numPartitions,
       final ReferenceCountingCloseableObject<Closeable> referenceCounter,
       final Closeable referenceReleaser
   )
   {
     this.file = file;
     this.fileLength = fileLength;
-    this.footerMemory = footerMemory;
+    this.frameFileFooter = frameFileFooter;
     this.maxMmapSize = maxMmapSize;
-    this.numFrames = numFrames;
-    this.numPartitions = numPartitions;
     this.referenceCounter = referenceCounter;
     this.referenceReleaser = referenceReleaser;
 
@@ -145,13 +149,17 @@ public class FrameFile implements Closeable
 
   /**
    * Open a frame file with certain optional flags.
-   *
-   * @param file  ƒrame file
+   *  @param file  ƒrame file
+   * @param byteTracker
    * @param flags optional flags
    */
-  public static FrameFile open(final File file, final Flag... flags) throws IOException
+  public static FrameFile open(
+      final File file,
+      @Nullable final ByteTracker byteTracker,
+      final Flag... flags
+  ) throws IOException
   {
-    return open(file, Integer.MAX_VALUE, flags);
+    return open(file, Integer.MAX_VALUE, byteTracker, flags);
   }
 
   /**
@@ -159,17 +167,22 @@ public class FrameFile implements Closeable
    *
    * Package-private because this method is intended for use in tests. In production, {@code maxMmapSize} is
    * set to {@link Integer#MAX_VALUE}.
-   *
-   * @param file        ƒrame file
+   *  @param file        ƒrame file
    * @param maxMmapSize largest buffer to mmap at once
+   * @param byteTracker
    * @param flags       optional flags
    */
-  static FrameFile open(final File file, final int maxMmapSize, final Flag... flags) throws IOException
+  static FrameFile open(
+      final File file,
+      final int maxMmapSize,
+      @Nullable final ByteTracker byteTracker,
+      final Flag... flags
+  ) throws IOException
   {
     final EnumSet<Flag> flagSet = flags.length == 0 ? EnumSet.noneOf(Flag.class) : EnumSet.copyOf(Arrays.asList(flags));
 
     if (!file.exists()) {
-      throw new FileNotFoundException(StringUtils.format("File [%s] not found", file));
+      throw new FileNotFoundException(StringUtils.format("File[%s] not found", file));
     }
 
     // Closer for mmap that is shared across all references: either footer only (if file size is larger
@@ -182,7 +195,7 @@ public class FrameFile implements Closeable
       // Verify minimum file length.
       if (fileLength <
           FrameFileWriter.MAGIC.length + FrameFileWriter.TRAILER_LENGTH + Byte.BYTES /* MARKER_NO_MORE_FRAMES */) {
-        throw new IOE("File [%s] is too short (size = [%,d])", file, fileLength);
+        throw new IOE("File[%s] is too short (size[%,d])", file, fileLength);
       }
 
       // Verify magic.
@@ -191,22 +204,18 @@ public class FrameFile implements Closeable
       randomAccessFile.readFully(buf, 0, FrameFileWriter.MAGIC.length);
 
       if (!bufMemory.equalTo(0, Memory.wrap(FrameFileWriter.MAGIC), 0, FrameFileWriter.MAGIC.length)) {
-        throw new IOE("File [%s] is not a frame file", file);
+        throw new IOE("File[%s] is not a frame file", file);
       }
 
       // Read number of frames and partitions.
       randomAccessFile.seek(fileLength - FrameFileWriter.TRAILER_LENGTH);
       randomAccessFile.readFully(buf, 0, FrameFileWriter.TRAILER_LENGTH);
 
-      final int numFrames = bufMemory.getInt(0);
-      final int numPartitions = bufMemory.getInt(Integer.BYTES);
       final int footerLength = bufMemory.getInt(Integer.BYTES * 2L);
-      final int expectedFooterChecksum = bufMemory.getInt(Integer.BYTES * 3L);
-
       if (footerLength < 0) {
-        throw new ISE("Negative-size footer. Corrupt or truncated file?");
+        throw new ISE("Negative-size footer. Corrupt or truncated file[%s]?", file);
       } else if (footerLength > fileLength) {
-        throw new ISE("Oversize footer. Corrupt or truncated file?");
+        throw new ISE("Oversize footer. Corrupt or truncated file[%s]?", file);
       }
 
       final Memory wholeFileMemory;
@@ -234,23 +243,7 @@ public class FrameFile implements Closeable
         footerMemory = Memory.wrap(footerMapHandle.get(), ByteOrder.LITTLE_ENDIAN);
       }
 
-      // Verify footer begins with MARKER_NO_MORE_FRAMES.
-      if (footerMemory.getByte(0) != FrameFileWriter.MARKER_NO_MORE_FRAMES) {
-        throw new IOE("File [%s] end marker not in expected location", file);
-      }
-
-      // Verify footer checksum.
-      final int actualChecksum =
-          (int) footerMemory.xxHash64(0, footerMemory.getCapacity() - Integer.BYTES, FrameFileWriter.CHECKSUM_SEED);
-
-      if (expectedFooterChecksum != actualChecksum) {
-        throw new ISE("Expected footer checksum did not match actual checksum. Corrupt or truncated file?");
-      }
-
-      // Verify footer length.
-      if (footerLength != FrameFileWriter.footerLength(numFrames, numPartitions)) {
-        throw new ISE("Expected footer length did not match actual footer length. Corrupt or truncated file?");
-      }
+      final FrameFileFooter frameFileFooter = new FrameFileFooter(footerMemory, fileLength);
 
       // Set up closer, refcounter; return instance.
       final Closer fileCloser = Closer.create();
@@ -259,22 +252,30 @@ public class FrameFile implements Closeable
       if (flagSet.contains(Flag.DELETE_ON_CLOSE)) {
         fileCloser.register(() -> {
           if (!file.delete()) {
-            log.warn("Could not delete frame file [%s]", file);
+            log.warn("Could not delete frame file[%s]", file);
+          }
+          if (byteTracker != null) {
+            // Only release the bytes taken by frames, we don't track the header and footer as of now.
+            // The reason for not tracking them currently is that they are written in the close method of a channel
+            // incase of empty frame files. To track them, we'd either need to augment close method to pass error objects
+            // if the storage can't write the header/footer data or create a new method in the channel interface to allow
+            // for pre-reserving bytes for them before the close method is called.
+            // For now, they are left untracked also on the assumption that their size would be much smaller than the
+            // actual frame data. But in future, it would be better to track their sizes as well.
+            byteTracker.release(fileLength - footerLength - FrameFileWriter.MAGIC.length);
           }
         });
       }
 
       final ReferenceCountingCloseableObject<Closeable> referenceCounter =
-          new ReferenceCountingCloseableObject<Closeable>(fileCloser) {};
+          new ReferenceCountingCloseableObject<>(fileCloser) {};
 
       return new FrameFile(
           file,
           fileLength,
-          footerMemory,
+          frameFileFooter,
           wholeFileMemory,
           maxMmapSize,
-          numFrames,
-          numPartitions,
           referenceCounter,
           referenceCounter
       );
@@ -295,7 +296,7 @@ public class FrameFile implements Closeable
    */
   public int numFrames()
   {
-    return numFrames;
+    return frameFileFooter.getNumFrames();
   }
 
   /**
@@ -303,7 +304,7 @@ public class FrameFile implements Closeable
    */
   public int numPartitions()
   {
-    return numPartitions;
+    return frameFileFooter.getNumPartitions();
   }
 
   /**
@@ -313,54 +314,66 @@ public class FrameFile implements Closeable
   public int getPartitionStartFrame(final int partition)
   {
     checkOpen();
-
-    if (partition < 0) {
-      throw new IAE("Partition [%,d] out of bounds", partition);
-    } else if (partition >= numPartitions) {
-      // Frame might not have every partition, if some are empty.
-      return numFrames;
-    } else {
-      final long partitionStartFrameLocation =
-          footerMemory.getCapacity()
-          - FrameFileWriter.TRAILER_LENGTH
-          - (long) numFrames * Long.BYTES
-          - (long) (numPartitions - partition) * Integer.BYTES;
-
-      return footerMemory.getInt(partitionStartFrameLocation);
-    }
+    return frameFileFooter.getPartitionStartFrame(partition);
   }
 
   /**
-   * Reads a frame from the file.
+   * Reads a RowsAndColumns from the file.
+   *
+   * @param batchNumber  the batch number to read. Starts at 0, ends at {@link #numFrames()} (exclusive)
+   * @param deserializer deserializer for WireTransferable format
+   *
+   * @return the RowsAndColumns
    */
-  public Frame frame(final int frameNumber)
+  public RowsAndColumns rac(
+      final int batchNumber,
+      @Nullable final WireTransferable.ConcreteDeserializer deserializer
+  )
   {
     checkOpen();
 
-    if (frameNumber < 0 || frameNumber >= numFrames) {
-      throw new IAE("Frame [%,d] out of bounds", frameNumber);
+    if (batchNumber < 0 || batchNumber >= numFrames()) {
+      throw new IAE("Batch[%,d] out of bounds", batchNumber);
     }
 
-    final long frameEnd = getFrameEndPosition(frameNumber);
-    final long frameStart;
+    final long markerPosition = getMarkerPosition(batchNumber);
+    final long dataStart = markerPosition + Byte.BYTES;
+    final long dataEnd = frameFileFooter.getFrameEndPosition(batchNumber);
 
-    if (frameNumber == 0) {
-      frameStart = FrameFileWriter.MAGIC.length + Byte.BYTES /* MARKER_FRAME */;
-    } else {
-      frameStart = getFrameEndPosition(frameNumber - 1) + Byte.BYTES /* MARKER_FRAME */;
+    // Map buffer to include marker byte.
+    if (buffer == null || markerPosition < bufferOffset || dataEnd > bufferOffset + buffer.getCapacity()) {
+      remapBuffer(markerPosition);
     }
 
-    if (buffer == null || frameStart < bufferOffset || frameEnd > bufferOffset + buffer.getCapacity()) {
-      remapBuffer(frameStart);
+    if (markerPosition < bufferOffset || dataEnd > bufferOffset + buffer.getCapacity()) {
+      // Still out of bounds after remapping successfully: must mean entry was too large to fit in maxMmapSize.
+      throw new ISE("Entry [%,d] too large (max size = %,d bytes)", batchNumber, maxMmapSize);
     }
 
-    if (frameStart < bufferOffset || frameEnd > bufferOffset + buffer.getCapacity()) {
-      // Still out of bounds after remapping successfully: must mean frame was too large to fit in maxMmapSize.
-      throw new ISE("Frame [%,d] too large (max size = %,d bytes)", frameNumber, maxMmapSize);
-    }
+    // Read marker byte.
+    final byte marker = buffer.getByte(markerPosition - bufferOffset);
 
-    // Decompression is safe even on corrupt data: it validates position, length, checksum.
-    return Frame.decompress(buffer, frameStart - bufferOffset, frameEnd - frameStart);
+    // Read the data.
+    final byte[] decompressedData = FrameCompression.decompress(
+        buffer,
+        dataStart - bufferOffset,
+        dataEnd - dataStart
+    );
+
+    switch (marker) {
+      case FrameFileWriter.MARKER_FRAME:
+        final Frame frame = Frame.wrap(decompressedData);
+        return frame.asRAC();
+
+      case FrameFileWriter.MARKER_RAC:
+        if (deserializer == null) {
+          throw DruidException.defensive("Cannot read RAC, no WireTransferable deserializer");
+        }
+        return deserializer.deserialize(ByteBufferUtils.wrapLE(decompressedData));
+
+      default:
+        throw new ISE("Invalid marker byte[%d] for batch[%,d]", marker, batchNumber);
+    }
   }
 
   /**
@@ -377,11 +390,9 @@ public class FrameFile implements Closeable
     return new FrameFile(
         file,
         fileLength,
-        footerMemory,
+        frameFileFooter,
         bufferOffset == 0 && bufferCloser == null ? buffer : null, // If bufferCloser is null, buffer is shared
         maxMmapSize,
-        numFrames,
-        numPartitions,
         referenceCounter,
         releaser
     );
@@ -412,23 +423,6 @@ public class FrameFile implements Closeable
     if (referenceCounter.isClosed()) {
       throw new ISE("Frame file is closed");
     }
-  }
-
-  private long getFrameEndPosition(final int frameNumber)
-  {
-    assert frameNumber >= 0 && frameNumber < numFrames;
-
-    final long frameEndPointerPosition =
-        footerMemory.getCapacity() - FrameFileWriter.TRAILER_LENGTH - (long) (numFrames - frameNumber) * Long.BYTES;
-
-    final long frameEndPosition = footerMemory.getLong(frameEndPointerPosition);
-
-    // Bounds check: protect against possibly-corrupt data.
-    if (frameEndPosition < 0 || frameEndPosition > fileLength - footerMemory.getCapacity()) {
-      throw new ISE("Corrupt frame file: frame [%,d] location out of range", frameNumber);
-    }
-
-    return frameEndPosition;
   }
 
   /**
@@ -473,6 +467,18 @@ public class FrameFile implements Closeable
     finally {
       buffer = null;
       bufferCloser = null;
+    }
+  }
+
+  /**
+   * Returns the position in the file of the marker byte for the given frame number.
+   */
+  private long getMarkerPosition(final int frameNumber)
+  {
+    if (frameNumber == 0) {
+      return FrameFileWriter.MAGIC.length;
+    } else {
+      return frameFileFooter.getFrameEndPosition(frameNumber - 1);
     }
   }
 }

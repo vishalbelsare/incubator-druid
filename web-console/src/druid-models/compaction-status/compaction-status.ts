@@ -16,7 +16,10 @@
  * limitations under the License.
  */
 
-import { CompactionConfig } from '../compaction-config/compaction-config';
+import type { NumberLike } from '../../utils';
+import { formatBytesCompact, pluralIfNeeded } from '../../utils';
+import type { CompactionConfig } from '../compaction-config/compaction-config';
+import { compactionConfigHasLegacyInputSegmentSizeBytesSet } from '../compaction-config/compaction-config';
 
 function capitalizeFirst(str: string): string {
   return str.slice(0, 1).toUpperCase() + str.slice(1).toLowerCase();
@@ -25,15 +28,15 @@ function capitalizeFirst(str: string): string {
 export interface CompactionStatus {
   dataSource: string;
   scheduleStatus: string;
-  bytesAwaitingCompaction: number;
-  bytesCompacted: number;
-  bytesSkipped: number;
-  segmentCountAwaitingCompaction: number;
-  segmentCountCompacted: number;
-  segmentCountSkipped: number;
-  intervalCountAwaitingCompaction: number;
-  intervalCountCompacted: number;
-  intervalCountSkipped: number;
+  bytesAwaitingCompaction: NumberLike;
+  bytesCompacted: NumberLike;
+  bytesSkipped: NumberLike;
+  segmentCountAwaitingCompaction: NumberLike;
+  segmentCountCompacted: NumberLike;
+  segmentCountSkipped: NumberLike;
+  intervalCountAwaitingCompaction: NumberLike;
+  intervalCountCompacted: NumberLike;
+  intervalCountSkipped: NumberLike;
 }
 
 export function zeroCompactionStatus(compactionStatus: CompactionStatus): boolean {
@@ -50,19 +53,32 @@ export function zeroCompactionStatus(compactionStatus: CompactionStatus): boolea
   );
 }
 
-export function formatCompactionConfigAndStatus(
-  compactionConfig: CompactionConfig | undefined,
-  compactionStatus: CompactionStatus | undefined,
-) {
-  if (compactionConfig) {
-    if (compactionStatus) {
+export interface CompactionInfo {
+  config?: CompactionConfig;
+  status?: CompactionStatus;
+}
+
+export function formatCompactionInfo(compaction: CompactionInfo) {
+  const { config, status } = compaction;
+  if (config) {
+    if (status) {
       if (
-        compactionStatus.bytesAwaitingCompaction === 0 &&
-        !zeroCompactionStatus(compactionStatus)
+        status.bytesAwaitingCompaction === 0 &&
+        status.segmentCountAwaitingCompaction === 0 &&
+        status.intervalCountAwaitingCompaction === 0 &&
+        !zeroCompactionStatus(status)
       ) {
-        return 'Fully compacted';
+        if (status.segmentCountSkipped) {
+          return `Fully compacted (except the last ${config.skipOffsetFromLatest || 'P1D'} of data${
+            compactionConfigHasLegacyInputSegmentSizeBytesSet(config)
+              ? ` and segments larger than ${formatBytesCompact(config.inputSegmentSizeBytes!)}`
+              : ''
+          }, ${pluralIfNeeded(status.segmentCountSkipped, 'segment')} skipped)`;
+        } else {
+          return 'Fully compacted';
+        }
       } else {
-        return capitalizeFirst(compactionStatus.scheduleStatus);
+        return capitalizeFirst(status.scheduleStatus.replace(/_/g, ' '));
       }
     } else {
       return 'Awaiting first run';

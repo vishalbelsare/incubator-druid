@@ -18,35 +18,50 @@
 
 import { Button, Icon, Intent } from '@blueprintjs/core';
 import { IconNames } from '@blueprintjs/icons';
-import { Tooltip2 } from '@blueprintjs/popover2';
 import classNames from 'classnames';
+import { sum } from 'd3-array';
 import React from 'react';
-import ReactTable, { Column } from 'react-table';
 
-import { BracedText, TableClickableCell } from '../../../components';
+import type { ConsoleTableColumn } from '../../../components';
 import {
+  BracedText,
+  ConsoleTable,
+  DEFAULT_TABLE_CLASS_NAME,
+  TableClickableCell,
+} from '../../../components';
+import type {
   ChannelCounterName,
   ClusterBy,
   CounterName,
+  CpusCounter,
   Execution,
-  formatClusterBy,
+  InOut,
+  SegmentGenerationProgressFields,
   SimpleWideCounter,
   StageDefinition,
+  StageInput,
+} from '../../../druid-models';
+import {
+  CPUS_COUNTER_FIELDS,
+  cpusCounterFieldTitle,
+  formatClusterBy,
   Stages,
   summarizeInputSource,
 } from '../../../druid-models';
-import { DEFAULT_TABLE_CLASS_NAME } from '../../../react-table';
 import {
+  assemble,
   capitalizeFirst,
   clamp,
   deepGet,
-  formatBytes,
-  formatDuration,
+  filterMap,
+  formatByteRate,
+  formatBytesCompact,
   formatDurationWithMs,
+  formatDurationWithMsIfNeeded,
   formatInteger,
   formatPercent,
-  NumberLike,
   oneOf,
+  pluralIfNeeded,
   twoLines,
 } from '../../../utils';
 
@@ -54,6 +69,20 @@ import './execution-stages-pane.scss';
 
 const MAX_STAGE_ROWS = 20;
 const MAX_DETAIL_ROWS = 20;
+const NOT_SIZE_ON_DISK = '(does not represent size on disk)';
+const NO_SIZE_INFO = 'no size info';
+
+// For the graph
+const LANE_WIDTH = 20;
+const STAGE_OFFSET = '19px';
+
+function summarizeTableInput(tableStageInput: StageInput): string {
+  if (tableStageInput.type !== 'table') return '';
+  return assemble(
+    `Datasource: ${tableStageInput.dataSource}`,
+    tableStageInput.intervals && `Interval: ${tableStageInput.intervals.join('; ')}`,
+  ).join('\n');
+}
 
 function formatBreakdown(breakdown: Record<string, number>): string {
   return Object.keys(breakdown)
@@ -63,17 +92,30 @@ function formatBreakdown(breakdown: Record<string, number>): string {
 
 const formatRows = formatInteger;
 const formatRowRate = formatInteger;
-const formatSize = (bytes: number) => `(${formatBytes(bytes)})`;
-const formatByteRate = (byteRate: number) => `(${formatBytes(byteRate)}/s)`;
 const formatFrames = formatInteger;
-const formatDurationDynamic = (n: NumberLike) =>
-  n < 1000 ? formatDurationWithMs(n) : formatDuration(n);
 
 const formatFileOfTotal = (files: number, totalFiles: number) =>
   `(${formatInteger(files)} / ${formatInteger(totalFiles)})`;
 
 const formatFileOfTotalForBrace = (files: number, totalFiles: number) =>
   `(${formatInteger(files)} /GB ${formatInteger(totalFiles)})`;
+
+function formatLoadTooltip(
+  loadFiles: number,
+  loadBytes?: number,
+  loadTime?: number,
+  loadWait?: number,
+): string {
+  return assemble(
+    `Loaded files: ${formatInteger(loadFiles)}`,
+    loadBytes != null && `Loaded bytes: ${formatBytesCompact(loadBytes)}`,
+    loadTime != null && loadTime > 0 && `Load time: ${formatDurationWithMs(loadTime)}`,
+    loadTime && loadBytes
+      ? `Load rate: ${formatByteRate(loadBytes / (loadTime / 1000))}`
+      : undefined,
+    loadWait != null && loadWait > 0 && `Load wait: ${formatDurationWithMs(loadWait)}`,
+  ).join('\n');
+}
 
 function inputLabelContent(stage: StageDefinition, inputIndex: number) {
   const { input, broadcast } = stage.definition;
@@ -83,12 +125,15 @@ function inputLabelContent(stage: StageDefinition, inputIndex: number) {
       Input{' '}
       {stageInput.type === 'stage' && <span className="stage">{`Stage${stageInput.stage}`}</span>}
       {stageInput.type === 'table' && (
-        <span className="datasource" title={stageInput.dataSource}>
+        <span className="datasource" data-tooltip={summarizeTableInput(stageInput)}>
           {stageInput.dataSource}
         </span>
       )}
       {stageInput.type === 'external' && (
-        <span className="external" title={summarizeInputSource(stageInput.inputSource, true)}>
+        <span
+          className="external"
+          data-tooltip={summarizeInputSource(stageInput.inputSource, true)}
+        >
           {`${stageInput.inputSource.type} external`}
         </span>
       )}
@@ -96,48 +141,70 @@ function inputLabelContent(stage: StageDefinition, inputIndex: number) {
         <Icon
           className="broadcast-tag"
           icon={IconNames.CELL_TOWER}
-          title="This input is being broadcast to all workers in this stage."
+          data-tooltip="This input is being broadcast to all workers in this stage."
         />
       )}
     </>
   );
 }
 
+function formatInputLabel(stage: StageDefinition, inputIndex: number) {
+  const { input, broadcast } = stage.definition;
+  const stageInput = input[inputIndex];
+  let ret = 'Input ';
+  switch (stageInput.type) {
+    case 'stage':
+      ret += `Stage${stageInput.stage}`;
+      break;
+
+    case 'table':
+      ret += stageInput.dataSource;
+      break;
+
+    case 'external':
+      ret += `${stageInput.inputSource.type} external`;
+      break;
+  }
+
+  if (broadcast?.includes(inputIndex)) {
+    ret += ` (broadcast)`;
+  }
+
+  return ret;
+}
+
 export interface ExecutionStagesPaneProps {
   execution: Execution;
   onErrorClick?(): void;
   onWarningClick?(): void;
-  goToIngestion(taskId: string): void;
+  goToTask?(taskId: string): void;
 }
 
 export const ExecutionStagesPane = React.memo(function ExecutionStagesPane(
   props: ExecutionStagesPaneProps,
 ) {
-  const { execution, onErrorClick, onWarningClick, goToIngestion } = props;
+  const { execution, onErrorClick, onWarningClick, goToTask } = props;
   const stages = execution.stages || new Stages([]);
   const error = execution.error;
+  const executionStartTime = execution.startTime;
+  const executionDuration = execution.duration;
 
   const rowRateValues = stages.stages.map(s =>
     formatRowRate(stages.getRateFromStage(s, 'rows') || 0),
-  );
-  const byteRateValues = stages.stages.map(s =>
-    formatByteRate(stages.getRateFromStage(s, 'bytes') || 0),
   );
 
   const rowsValues = stages.stages.flatMap(stage => [
     ...stages.getInputCountersForStage(stage, 'rows').map(formatRows),
     formatRows(stages.getTotalCounterForStage(stage, 'output', 'rows')),
     formatRows(stages.getTotalCounterForStage(stage, 'shuffle', 'rows')),
+    formatRows(stages.getTotalSegmentGenerationProgressForStage(stage, 'rowsMerged')),
+    formatRows(stages.getTotalSegmentGenerationProgressForStage(stage, 'rowsPushed')),
   ]);
 
-  const bytesAndFilesValues = stages.stages.flatMap(stage => {
+  const filesValues = filterMap(stages.stages, stage => {
     const inputFileCount = stages.getTotalInputForStage(stage, 'totalFiles');
-    return [
-      ...stages.getInputCountersForStage(stage, 'bytes').map(formatSize),
-      formatSize(stages.getTotalCounterForStage(stage, 'output', 'bytes')),
-      formatSize(stages.getTotalCounterForStage(stage, 'shuffle', 'bytes')),
-      inputFileCount ? formatFileOfTotalForBrace(inputFileCount, inputFileCount) : '',
-    ];
+    if (!inputFileCount) return;
+    return formatFileOfTotalForBrace(inputFileCount, inputFileCount);
   });
 
   function detailedStats(stage: StageDefinition) {
@@ -145,9 +212,10 @@ export const ExecutionStagesPane = React.memo(function ExecutionStagesPane(
     const phaseIsWorking = oneOf(phase, 'NEW', 'READING_INPUT', 'POST_READING');
     return (
       <div className="execution-stage-detail-pane">
-        {detailedCountersForPartitions(stage, 'input', phase === 'READING_INPUT')}
+        {detailedCountersForPartitions(stage, 'in', phase === 'READING_INPUT')}
         {detailedCountersForWorkers(stage)}
-        {detailedCountersForPartitions(stage, 'output', phaseIsWorking)}
+        {detailedCountersForPartitions(stage, 'out', phaseIsWorking)}
+        {detailedCountersForSort(stage)}
       </div>
     );
   }
@@ -158,24 +226,28 @@ export const ExecutionStagesPane = React.memo(function ExecutionStagesPane(
 
     const counterNames: ChannelCounterName[] = stages.getChannelCounterNamesForStage(stage);
 
-    const bracesRows: Record<ChannelCounterName, string[]> = {} as any;
-    const bracesExtra: Record<ChannelCounterName, string[]> = {} as any;
-    for (const counterName of counterNames) {
-      bracesRows[counterName] = wideCounters.map(wideCounter =>
-        formatRows(wideCounter[counterName]!.rows),
+    const isSegmentGenerator = Stages.stageType(stage) === 'segmentGenerator';
+
+    // Unified braces for the combined rows column
+    const allBracesRows: string[] = counterNames.flatMap(counterName =>
+      wideCounters.map(wideCounter => formatRows(wideCounter[counterName]!.rows)),
+    );
+    if (isSegmentGenerator) {
+      allBracesRows.push(
+        ...wideCounters.map(wc => formatRows(wc.segmentGenerationProgress?.rowsMerged || 0)),
+        ...wideCounters.map(wc => formatRows(wc.segmentGenerationProgress?.rowsPushed || 0)),
       );
-      bracesExtra[counterName] = wideCounters.map(wideCounter => {
-        const totalFiles = wideCounter[counterName]!.totalFiles;
-        if (totalFiles) {
-          return formatFileOfTotalForBrace(totalFiles, totalFiles);
-        } else {
-          return formatSize(wideCounter[counterName]!.bytes);
-        }
-      });
     }
+    const allBracesFiles: string[] = filterMap(
+      counterNames.flatMap(counterName =>
+        wideCounters.map(wideCounter => wideCounter[counterName]!),
+      ),
+      c => (c.totalFiles ? formatFileOfTotalForBrace(c.totalFiles, c.totalFiles) : undefined),
+    );
+    const firstNonInputIndex = counterNames.findIndex(cn => !cn.startsWith('input'));
 
     return (
-      <ReactTable
+      <ConsoleTable
         className="detail-counters-for-workers"
         data={wideCounters}
         loading={false}
@@ -188,93 +260,307 @@ export const ExecutionStagesPane = React.memo(function ExecutionStagesPane(
             Header: 'Worker',
             id: 'worker',
             accessor: d => d.index,
-            width: 100,
+            className: goToTask ? undefined : 'padded',
+            width: 95,
             Cell({ value }) {
-              const taskId = `${execution.id}-worker${value}`;
+              const workerStates = execution.workers?.[String(value)];
+              const workerState = workerStates?.[workerStates.length - 1];
+              const label = `Worker${value}`;
+
+              const workerRef = workerState?.workerDesc || workerState?.workerId;
+              if (goToTask && workerRef && !/:\d+$/.test(workerRef)) {
+                return (
+                  <TableClickableCell
+                    hoverIcon={IconNames.SHARE}
+                    tooltip={`Go to task: ${workerRef}`}
+                    onClick={() => {
+                      goToTask(workerRef);
+                    }}
+                  >
+                    {label}
+                  </TableClickableCell>
+                );
+              }
+
+              if (workerRef) {
+                return <span data-tooltip={workerRef}>{label}</span>;
+              }
+
+              return label;
+            },
+          } as ConsoleTableColumn<SimpleWideCounter>,
+          {
+            Header: twoLines(
+              'CPU utilization',
+              <i>
+                <span className="cpu-label">Counter</span>
+                <span className="cpu-counter">Wall time</span>
+              </i>,
+            ),
+            id: 'cpu',
+            accessor: d => d.cpu?.main?.cpu || 0,
+            className: 'padded',
+            width: 240,
+            show: stages.hasCounterForStage(stage, 'cpu'),
+            Cell({ original }) {
+              const cpuTotals: Partial<CpusCounter> = original.cpu || {};
               return (
-                <TableClickableCell
-                  hoverIcon={IconNames.SHARE}
-                  title={`Go to task: ${taskId}`}
-                  onClick={() => {
-                    goToIngestion(taskId);
-                  }}
-                >{`Worker${value}`}</TableClickableCell>
+                <>
+                  {filterMap(CPUS_COUNTER_FIELDS, k => {
+                    const v = cpuTotals[k];
+                    if (!v) return;
+                    const fieldTitle = cpusCounterFieldTitle(k);
+                    return (
+                      <div
+                        key={k}
+                        data-tooltip={`${fieldTitle}\nCPU time: ${formatDurationWithMs(
+                          Number(v.cpu) / 1e6,
+                        )}`}
+                      >
+                        <span className="cpu-label">{cpusCounterFieldTitle(k)}</span>
+                        <span className="cpu-counter">
+                          {formatDurationWithMs(Number(v.wall) / 1e6)}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </>
               );
             },
-          } as Column<SimpleWideCounter>,
-        ].concat(
-          counterNames.map((counterName, i) => {
-            const isInput = counterName.startsWith('input');
-            return {
-              Header: twoLines(
-                isInput ? (
-                  <span>{inputLabelContent(stage, i)}</span>
-                ) : (
-                  stages.getStageCounterTitle(stage, counterName)
-                ),
-                isInput ? <i>rows &nbsp; (size or files)</i> : <i>rows &nbsp; (size)</i>,
-              ),
-              id: counterName,
-              accessor: d => d[counterName]!.rows,
-              className: 'padded',
-              width: 180,
-              Cell({ value, original }) {
-                const c = (original as SimpleWideCounter)[counterName]!;
-                return (
-                  <>
-                    <BracedText text={formatRows(value)} braces={bracesRows[counterName]} />
-                    {c.totalFiles ? (
-                      <>
-                        {' '}
-                        &nbsp;{' '}
+          } as ConsoleTableColumn<SimpleWideCounter>,
+        ].concat([
+          {
+            Header: twoLines('Rows processed', <i>rows &nbsp; (input files)</i>),
+            id: 'rows_processed',
+            accessor: (d: SimpleWideCounter) =>
+              counterNames.reduce((acc, cn) => acc + (d[cn]?.rows || 0), 0),
+            className: 'padded',
+            width: 300,
+            Cell({ original }: { original: SimpleWideCounter }) {
+              return (
+                <>
+                  {counterNames.map((counterName, idx) => {
+                    const c = original[counterName]!;
+                    const isInput = counterName.startsWith('input');
+                    const inputIndex = isInput ? Number(counterName.replace('input', '')) : -1;
+                    const showSpacer = idx === firstNonInputIndex && firstNonInputIndex > 0;
+                    const label = isInput
+                      ? formatInputLabel(stage, inputIndex)
+                      : stages.getStageCounterTitle(stage, counterName);
+                    const tooltipParts: string[] = [];
+                    if (c.bytes) {
+                      tooltipParts.push(
+                        `Uncompressed size: ${formatBytesCompact(c.bytes)} ${NOT_SIZE_ON_DISK}`,
+                      );
+                    }
+                    if (c.loadFiles) {
+                      tooltipParts.push(
+                        formatLoadTooltip(c.loadFiles, c.loadBytes, c.loadTime, c.loadWait),
+                      );
+                    }
+                    if (c.queries || c.totalQueries) {
+                      tooltipParts.push(
+                        `Realtime queries: ${formatInteger(c.queries || 0)} / ${formatInteger(
+                          c.totalQueries || 0,
+                        )}`,
+                      );
+                    }
+                    return (
+                      <React.Fragment key={counterName}>
+                        {showSpacer && <div className="counter-spacer extend-right" />}
+                        <div
+                          data-tooltip={
+                            tooltipParts.length ? tooltipParts.join('\n') : NO_SIZE_INFO
+                          }
+                        >
+                          <span className="rows-label">{label}</span>
+                          <BracedText text={formatRows(c.rows)} braces={allBracesRows} />
+                          {Boolean(c.totalFiles) && (
+                            <>
+                              {' '}
+                              &nbsp;{' '}
+                              <BracedText
+                                text={formatFileOfTotal(c.files, c.totalFiles)}
+                                braces={allBracesFiles}
+                              />
+                            </>
+                          )}
+                        </div>
+                      </React.Fragment>
+                    );
+                  })}
+                  {isSegmentGenerator && (
+                    <>
+                      <div className="counter-spacer extend-right" />
+                      <div>
+                        <span className="rows-label">Merged</span>
                         <BracedText
-                          text={formatFileOfTotal(c.files, c.totalFiles)}
-                          braces={bracesExtra[counterName]}
+                          text={formatRows(original.segmentGenerationProgress?.rowsMerged || 0)}
+                          braces={allBracesRows}
                         />
-                      </>
-                    ) : c.bytes ? (
-                      <>
-                        {' '}
-                        &nbsp;
-                        <BracedText text={formatSize(c.bytes)} braces={bracesExtra[counterName]} />
-                      </>
-                    ) : undefined}
-                  </>
+                      </div>
+                      <div>
+                        <span className="rows-label">Pushed</span>
+                        <BracedText
+                          text={formatRows(original.segmentGenerationProgress?.rowsPushed || 0)}
+                          braces={allBracesRows}
+                        />
+                      </div>
+                    </>
+                  )}
+                </>
+              );
+            },
+          },
+          {
+            Header: 'Storage utilization',
+            id: 'storage',
+            accessor: (d: SimpleWideCounter) => {
+              const s = d.storage;
+              if (!s) return 0;
+              return s.localBytesWritten + s.durableBytesWritten;
+            },
+            className: 'padded',
+            width: 250,
+            show: stages.hasCounterForStage(stage, 'storage'),
+            Cell({ original }: { original: SimpleWideCounter }) {
+              const s = original.storage;
+              if (!s) return <i>none</i>;
+
+              const hasLocal = s.localBytesWritten > 0 || s.localBytesReserved > 0;
+              const hasDurable = s.durableBytesWritten > 0;
+
+              if (!hasLocal && !hasDurable) return <i>none</i>;
+
+              const tooltipParts: string[] = [];
+              if (hasLocal) {
+                const usedPart =
+                  s.localBytesMax != null
+                    ? `(${formatBytesCompact(s.localBytesReserved)} / ${formatBytesCompact(
+                        s.localBytesMax,
+                      )} used)`
+                    : `(${formatBytesCompact(s.localBytesReserved)} used)`;
+                tooltipParts.push(
+                  `Local: ${formatBytesCompact(s.localBytesWritten)} written in ${pluralIfNeeded(
+                    s.localFilesWritten,
+                    'file',
+                  )} ${usedPart}`,
                 );
-              },
-            };
-          }),
-        )}
+              }
+              if (hasDurable) {
+                tooltipParts.push(
+                  `Durable: ${formatBytesCompact(
+                    s.durableBytesWritten,
+                  )} written in ${pluralIfNeeded(s.durableFileCount, 'file')}`,
+                );
+              }
+
+              return (
+                <div data-tooltip={tooltipParts.join('\n')}>
+                  {hasLocal && (
+                    <div>
+                      <span className="storage-label">Local</span>
+                      {formatBytesCompact(s.localBytesWritten)}
+                      {s.localBytesReserved > 0 && (
+                        <span className="storage-used">
+                          {` (${formatBytesCompact(s.localBytesReserved)} used)`}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {hasDurable && (
+                    <div>
+                      <span className="storage-label">Durable</span>
+                      {formatBytesCompact(s.durableBytesWritten)}
+                    </div>
+                  )}
+                </div>
+              );
+            },
+          },
+        ])}
+      />
+    );
+  }
+
+  function detailedCountersForSort(stage: StageDefinition) {
+    const aggregatedSortProgress = stages.getAggregatedSortProgressForStage(stage);
+    if (!aggregatedSortProgress) return;
+
+    const data = [
+      { name: 'levelToBatches', counts: aggregatedSortProgress.totalMergingLevels },
+      ...Object.entries(aggregatedSortProgress.levelToBatches).map(([level, counts]) => ({
+        name: `Level ${level}`,
+        counts,
+      })),
+    ];
+
+    return (
+      <ConsoleTable
+        className="detail-counters-for-sort"
+        data={data}
+        loading={false}
+        defaultPageSize={clamp(data.length, 1, MAX_DETAIL_ROWS)}
+        showPagination={data.length > MAX_DETAIL_ROWS}
+        columns={[
+          {
+            Header: `Sort stat`,
+            accessor: 'name',
+            className: 'padded',
+            width: 120,
+          },
+          {
+            Header: `Counts`,
+            accessor: 'counts',
+            className: 'padded wrapped',
+            width: 300,
+            sortMethod: (a: Record<string, number>, b: Record<string, number>) =>
+              sum(Object.values(a), Number) - sum(Object.values(b), Number),
+            Cell({ value }) {
+              const entries = Object.entries(value);
+              if (!entries.length) return '-';
+              return (
+                <>
+                  {entries.map(([n, v], i) => (
+                    <React.Fragment key={n}>
+                      <span data-tooltip={`${pluralIfNeeded(Number(v), 'worker')} reporting: ${n}`}>
+                        {n}
+                        {Number(v) > 1 && <span className="count">{` (${v})`}</span>}
+                      </span>
+                      {i < entries.length - 1 && <span>, </span>}
+                    </React.Fragment>
+                  ))}
+                </>
+              );
+            },
+          },
+        ]}
       />
     );
   }
 
   function detailedCountersForPartitions(
     stage: StageDefinition,
-    type: 'input' | 'output',
+    inOut: InOut,
     inProgress: boolean,
   ) {
-    const wideCounters = stages.getByPartitionCountersForStage(stage, type);
+    const wideCounters = stages.getByPartitionCountersForStage(stage, inOut);
     if (!wideCounters.length) return;
 
     const counterNames: ChannelCounterName[] = stages.getPartitionChannelCounterNamesForStage(
       stage,
-      type,
+      inOut,
     );
 
     const bracesRows: Record<ChannelCounterName, string[]> = {} as any;
-    const bracesBytes: Record<ChannelCounterName, string[]> = {} as any;
     for (const counterName of counterNames) {
       bracesRows[counterName] = wideCounters.map(wideCounter =>
         formatRows(wideCounter[counterName]!.rows),
       );
-      bracesBytes[counterName] = wideCounters.map(wideCounter =>
-        formatSize(wideCounter[counterName]!.bytes),
-      );
     }
 
     return (
-      <ReactTable
+      <ConsoleTable
         className="detail-counters-for-partitions"
         data={wideCounters}
         loading={false}
@@ -284,7 +570,7 @@ export const ExecutionStagesPane = React.memo(function ExecutionStagesPane(
         showPagination={wideCounters.length > MAX_DETAIL_ROWS}
         columns={[
           {
-            Header: `${capitalizeFirst(type)} partitions` + (inProgress ? '*' : ''),
+            Header: `${capitalizeFirst(inOut)} partitions` + (inProgress ? '*' : ''),
             id: 'partition',
             accessor: d => d.index,
             className: 'padded',
@@ -292,7 +578,7 @@ export const ExecutionStagesPane = React.memo(function ExecutionStagesPane(
             Cell({ value }) {
               return `Partition${value}`;
             },
-          } as Column<SimpleWideCounter>,
+          } as ConsoleTableColumn<SimpleWideCounter>,
         ].concat(
           counterNames.map(counterName => {
             return {
@@ -305,18 +591,17 @@ export const ExecutionStagesPane = React.memo(function ExecutionStagesPane(
               className: 'padded',
               width: 180,
               Cell({ value, original }) {
-                const c = original[counterName];
+                const c = original[counterName]!;
                 return (
-                  <>
-                    <BracedText text={formatRows(value)} braces={bracesRows[counterName]} />
-                    {c.bytes ? (
-                      <>
-                        {' '}
-                        &nbsp;
-                        <BracedText text={formatSize(c.bytes)} braces={bracesBytes[counterName]} />
-                      </>
-                    ) : undefined}
-                  </>
+                  <BracedText
+                    text={formatRows(value)}
+                    braces={bracesRows[counterName]}
+                    data-tooltip={
+                      c.bytes
+                        ? `Uncompressed size: ${formatBytesCompact(c.bytes)} ${NOT_SIZE_ON_DISK}`
+                        : NO_SIZE_INFO
+                    }
+                  />
                 );
               },
             };
@@ -328,17 +613,35 @@ export const ExecutionStagesPane = React.memo(function ExecutionStagesPane(
 
   function dataProcessedInput(stage: StageDefinition, inputNumber: number) {
     const inputCounter: CounterName = `input${inputNumber}`;
-    if (!stages.hasCounterForStage(stage, inputCounter)) return;
-    const inputSizeBytes = stages.getTotalCounterForStage(stage, inputCounter, 'bytes');
+    const hasCounter = stages.hasCounterForStage(stage, inputCounter);
+    const bytes = stages.getTotalCounterForStage(stage, inputCounter, 'bytes');
     const inputFileCount = stages.getTotalCounterForStage(stage, inputCounter, 'totalFiles');
-
+    const loadFiles = stages.getTotalCounterForStage(stage, inputCounter, 'loadFiles');
+    const loadBytes = stages.getTotalCounterForStage(stage, inputCounter, 'loadBytes');
+    const loadTime = stages.getTotalCounterForStage(stage, inputCounter, 'loadTime');
+    const loadWait = stages.getTotalCounterForStage(stage, inputCounter, 'loadWait');
+    const queries = stages.getTotalCounterForStage(stage, inputCounter, 'queries');
+    const totalQueries = stages.getTotalCounterForStage(stage, inputCounter, 'totalQueries');
+    const inputLabel = `${formatInputLabel(stage, inputNumber)} (input${inputNumber})`;
     return (
-      <div className="data-transfer" key={inputNumber}>
+      <div
+        className="data-transfer"
+        key={inputNumber}
+        data-tooltip={
+          bytes
+            ? `${inputLabel} uncompressed size: ${formatBytesCompact(bytes)} ${NOT_SIZE_ON_DISK}`
+            : `${inputLabel}: ${NO_SIZE_INFO}`
+        }
+      >
         <BracedText
-          text={formatRows(stages.getTotalCounterForStage(stage, inputCounter, 'rows'))}
+          text={
+            hasCounter
+              ? formatRows(stages.getTotalCounterForStage(stage, inputCounter, 'rows'))
+              : ''
+          }
           braces={rowsValues}
         />
-        {inputFileCount ? (
+        {Boolean(inputFileCount) && (
           <>
             {' '}
             &nbsp;{' '}
@@ -347,15 +650,33 @@ export const ExecutionStagesPane = React.memo(function ExecutionStagesPane(
                 stages.getTotalCounterForStage(stage, inputCounter, 'files'),
                 inputFileCount,
               )}
-              braces={bytesAndFilesValues}
+              braces={filesValues}
             />
           </>
-        ) : inputSizeBytes ? (
+        )}
+        {Boolean(loadFiles) && (
           <>
             {' '}
-            &nbsp; <BracedText text={formatSize(inputSizeBytes)} braces={bytesAndFilesValues} />
+            &nbsp;{' '}
+            <Icon
+              className="load-indicator"
+              icon={IconNames.IMPORT}
+              data-tooltip={formatLoadTooltip(loadFiles, loadBytes, loadTime, loadWait)}
+            />
           </>
-        ) : undefined}
+        )}
+        {Boolean(queries || totalQueries) && (
+          <>
+            {' '}
+            &nbsp;{' '}
+            <Icon
+              icon={IconNames.ARROW_BOTTOM_LEFT}
+              data-tooltip={`Realtime queries (${formatInteger(queries || 0)} / ${formatInteger(
+                totalQueries || 0,
+              )})`}
+            />
+          </>
+        )}
       </div>
     );
   }
@@ -383,21 +704,20 @@ export const ExecutionStagesPane = React.memo(function ExecutionStagesPane(
   function dataProcessedOutput(stage: StageDefinition) {
     if (!stages.hasCounterForStage(stage, 'output')) return;
 
+    const title = stages.getStageCounterTitle(stage, 'output');
     return (
       <div
         className="data-transfer"
-        title={`${stages.getStageCounterTitle(stage, 'output')} frames: ${formatFrames(
+        data-tooltip={`${title} frames: ${formatFrames(
           stages.getTotalCounterForStage(stage, 'output', 'frames'),
-        )}`}
+        )}
+${title} uncompressed size: ${formatBytesCompact(
+          stages.getTotalCounterForStage(stage, 'output', 'bytes'),
+        )} ${NOT_SIZE_ON_DISK}`}
       >
         <BracedText
           text={formatRows(stages.getTotalCounterForStage(stage, 'output', 'rows'))}
           braces={rowsValues}
-        />{' '}
-        &nbsp;{' '}
-        <BracedText
-          text={formatSize(stages.getTotalCounterForStage(stage, 'output', 'bytes'))}
-          braces={bytesAndFilesValues}
         />
       </div>
     );
@@ -410,33 +730,50 @@ export const ExecutionStagesPane = React.memo(function ExecutionStagesPane(
 
     const shuffleRows = stages.getTotalCounterForStage(stage, 'shuffle', 'rows');
     const sortProgress = stages.getSortProgressForStage(stage);
+    const showSortedPercent = 0 < sortProgress && sortProgress < 1;
+    const title = stages.getStageCounterTitle(stage, 'shuffle');
     return (
       <div
         className="data-transfer"
-        title={`${stages.getStageCounterTitle(stage, 'shuffle')} frames: ${formatFrames(
+        data-tooltip={`${title} frames: ${formatFrames(
           stages.getTotalCounterForStage(stage, 'shuffle', 'frames'),
-        )}`}
-      >
-        {shuffleRows ? (
-          <>
-            <BracedText text={formatRows(shuffleRows)} braces={rowsValues} /> &nbsp;{' '}
-            <BracedText
-              text={formatSize(stages.getTotalCounterForStage(stage, 'shuffle', 'bytes'))}
-              braces={bytesAndFilesValues}
-            />
-            {0 < sortProgress && sortProgress < 1 && (
-              <div className="sort-percent">{`[${formatPercent(sortProgress)}]`}</div>
-            )}
-          </>
-        ) : (
-          <BracedText text={`[${formatPercent(sortProgress)}]`} braces={rowsValues} />
         )}
+${title} uncompressed size: ${formatBytesCompact(
+          stages.getTotalCounterForStage(stage, 'shuffle', 'bytes'),
+        )} ${NOT_SIZE_ON_DISK}`}
+      >
+        {Boolean(shuffleRows) && <BracedText text={formatRows(shuffleRows)} braces={rowsValues} />}
+        {Boolean(shuffleRows && showSortedPercent) && <>&nbsp; : &nbsp;</>}
+        {showSortedPercent && `${formatPercent(sortProgress)} sorted`}
       </div>
     );
   }
 
+  function dataProcessedSegmentGeneration(
+    stage: StageDefinition,
+    field: SegmentGenerationProgressFields,
+  ) {
+    if (!stages.hasCounterForStage(stage, 'segmentGenerationProgress')) return;
+
+    return (
+      <div className="data-transfer" data-tooltip={NO_SIZE_INFO}>
+        <BracedText
+          text={formatRows(stages.getTotalSegmentGenerationProgressForStage(stage, field))}
+          braces={rowsValues}
+        />
+      </div>
+    );
+  }
+
+  const graphInfos = stages.getGraphInfos();
+  const maxLanes = Math.max(...graphInfos.map(graphInfo => graphInfo.length));
+
+  function laneX(laneNumber: number) {
+    return `${((laneNumber + 0.5) / maxLanes) * 100}%`;
+  }
+
   return (
-    <ReactTable
+    <ConsoleTable
       className={classNames('execution-stages-pane', DEFAULT_TABLE_CLASS_NAME)}
       data={stages.stages}
       loading={false}
@@ -448,13 +785,68 @@ export const ExecutionStagesPane = React.memo(function ExecutionStagesPane(
       SubComponent={({ original }) => detailedStats(original)}
       columns={[
         {
+          id: 'graph',
+          className: 'graph-cell',
+          accessor: 'stageNumber',
+          show: maxLanes > 1,
+          width: LANE_WIDTH * maxLanes,
+          minWidth: LANE_WIDTH,
+          Cell({ value }) {
+            const graphInfo = graphInfos[value];
+
+            return (
+              <svg xmlns="http://www.w3.org/2000/svg">
+                {graphInfo.flatMap((lane, i) => {
+                  switch (lane.type) {
+                    case 'line':
+                      return (
+                        <line
+                          key={`line${i}`}
+                          x1={laneX(lane.fromLane)}
+                          y1="0%"
+                          x2={laneX(i)}
+                          y2="100%"
+                        />
+                      );
+
+                    case 'stage':
+                      return [
+                        ...lane.fromLanes.map(fromLane => (
+                          <line
+                            key={`stage${i}_from${fromLane}`}
+                            x1={laneX(fromLane)}
+                            y1="0%"
+                            x2={laneX(i)}
+                            y2={STAGE_OFFSET}
+                          />
+                        )),
+                        ...(lane.hasOut
+                          ? [
+                              <line
+                                key={`stage${i}_out`}
+                                x1={laneX(i)}
+                                y1={STAGE_OFFSET}
+                                x2={laneX(i)}
+                                y2="100%"
+                              />,
+                            ]
+                          : []),
+                        <circle key={`stage${i}_stage`} cx={laneX(i)} cy={STAGE_OFFSET} r={5} />,
+                      ];
+                  }
+                })}
+              </svg>
+            );
+          },
+        },
+        {
           Header: twoLines('Stage', <i>processorType</i>),
           id: 'stage',
           accessor: 'stageNumber',
           className: 'padded',
-          width: 140,
+          width: 160,
           Cell(props) {
-            const stage = props.original as StageDefinition;
+            const stage = props.original;
             const myError = error && error.stageNumber === stage.stageNumber;
             const warnings = stages.getWarningCountForStage(stage);
             return (
@@ -463,43 +855,33 @@ export const ExecutionStagesPane = React.memo(function ExecutionStagesPane(
                   <span className="stage">{`Stage${stage.stageNumber}`}</span>
                 </div>
                 <div>{stage.definition.processor.type}</div>
+                {stage.sort && <div className="detail-line">(with sort)</div>}
                 {(myError || warnings > 0) && (
-                  <div>
+                  <div className="error-warning">
                     {myError && (
-                      <>
-                        <Tooltip2
-                          content={
-                            <div>
-                              {(error.error.errorCode ? `${error.error.errorCode}: ` : '') +
-                                error.error.errorMessage}
-                            </div>
-                          }
-                        >
-                          <Button
-                            minimal
-                            small
-                            icon={IconNames.ERROR}
-                            intent={Intent.DANGER}
-                            onClick={onErrorClick}
-                          />
-                        </Tooltip2>{' '}
-                      </>
-                    )}
-                    {warnings > 0 && (
-                      <Tooltip2
-                        content={
-                          <pre>{formatBreakdown(stages.getWarningBreakdownForStage(stage))}</pre>
+                      <Button
+                        variant="minimal"
+                        size="small"
+                        icon={IconNames.ERROR}
+                        intent={Intent.DANGER}
+                        onClick={onErrorClick}
+                        data-tooltip={
+                          (error.error.errorCode ? `${error.error.errorCode}: ` : '') +
+                          error.error.errorMessage
                         }
-                      >
-                        <Button
-                          minimal
-                          small
-                          icon={IconNames.WARNING_SIGN}
-                          text={warnings > 1 ? `${warnings}` : undefined}
-                          intent={Intent.WARNING}
-                          onClick={onWarningClick}
-                        />
-                      </Tooltip2>
+                      />
+                    )}
+                    {myError && warnings > 0 && ' '}
+                    {warnings > 0 && (
+                      <Button
+                        variant="minimal"
+                        size="small"
+                        icon={IconNames.WARNING_SIGN}
+                        text={warnings > 1 ? `${warnings}` : undefined}
+                        intent={Intent.WARNING}
+                        onClick={onWarningClick}
+                        data-tooltip={formatBreakdown(stages.getWarningBreakdownForStage(stage))}
+                      />
                     )}
                   </div>
                 )}
@@ -514,7 +896,7 @@ export const ExecutionStagesPane = React.memo(function ExecutionStagesPane(
           className: 'padded',
           width: 150,
           Cell(props) {
-            const stage = props.original as StageDefinition;
+            const stage = props.original;
             const { input } = stage.definition;
             return (
               <>
@@ -525,23 +907,30 @@ export const ExecutionStagesPane = React.memo(function ExecutionStagesPane(
                   <>
                     <div className="counter-spacer extend-right" />
                     <div>{stages.getStageCounterTitle(stage, 'output')}</div>
+                    {stages.hasCounterForStage(stage, 'shuffle') && (
+                      <div>{stages.getStageCounterTitle(stage, 'shuffle')}</div>
+                    )}
                   </>
                 )}
-                {stages.hasCounterForStage(stage, 'shuffle') && (
-                  <div>{stages.getStageCounterTitle(stage, 'shuffle')}</div>
+                {stages.hasCounterForStage(stage, 'segmentGenerationProgress') && (
+                  <>
+                    <div className="counter-spacer extend-right" />
+                    <div>Merged</div>
+                    <div>Pushed</div>
+                  </>
                 )}
               </>
             );
           },
         },
         {
-          Header: twoLines('Data processed', <i>rows &nbsp; (size or files)</i>),
-          id: 'data_processed',
+          Header: twoLines('Rows processed', <i>rows &nbsp; (input files)</i>),
+          id: 'rows_processed',
           accessor: () => null,
           className: 'padded',
-          width: 220,
+          width: 200,
           Cell({ original }) {
-            const stage = original as StageDefinition;
+            const stage = original;
             const { input, broadcast } = stage.definition;
             return (
               <>
@@ -551,59 +940,119 @@ export const ExecutionStagesPane = React.memo(function ExecutionStagesPane(
                     : dataProcessedInput(stage, i),
                 )}
                 {stages.hasCounterForStage(stage, 'output') && (
-                  <div className="counter-spacer extend-left" />
+                  <>
+                    <div className="counter-spacer extend-left" />
+                    {dataProcessedOutput(stage)}
+                    {dataProcessedShuffle(stage)}
+                  </>
                 )}
-                {dataProcessedOutput(stage)}
-                {dataProcessedShuffle(stage)}
+                {stages.hasCounterForStage(stage, 'segmentGenerationProgress') &&
+                  stages.getTotalSegmentGenerationProgressForStage(stage, 'rowsMerged') > 0 && (
+                    <>
+                      <div className="counter-spacer extend-left" />
+                      {dataProcessedSegmentGeneration(stage, 'rowsMerged')}
+                      {dataProcessedSegmentGeneration(stage, 'rowsPushed')}
+                    </>
+                  )}
               </>
             );
           },
         },
         {
-          Header: twoLines('Data processing rate', <i>rows/s &nbsp; (data rate)</i>),
-          id: 'data_processing_rate',
+          Header: twoLines('Processing rate', <i>rows/s</i>),
+          id: 'processing_rate',
           accessor: s => stages.getRateFromStage(s, 'rows'),
           className: 'padded',
-          width: 200,
+          width: 150,
           Cell({ value, original }) {
-            const stage = original as StageDefinition;
+            const stage = original;
             if (typeof value !== 'number') return null;
 
             const byteRate = stages.getRateFromStage(stage, 'bytes');
             return (
-              <>
-                <BracedText text={formatRowRate(value)} braces={rowRateValues} />
-                {byteRate ? (
-                  <>
-                    {' '}
-                    &nbsp; <BracedText text={formatByteRate(byteRate)} braces={byteRateValues} />
-                  </>
-                ) : undefined}
-              </>
+              <BracedText
+                className="moon"
+                text={formatRowRate(value)}
+                braces={rowRateValues}
+                data-tooltip={byteRate ? `${formatBytesCompact(byteRate)}/s` : 'Unknown byte rate'}
+              />
             );
           },
-        },
-        {
-          Header: 'Phase',
-          id: 'phase',
-          accessor: row => (row.phase ? capitalizeFirst(row.phase.replace(/_/g, ' ')) : ''),
-          className: 'padded',
-          width: 130,
         },
         {
           Header: 'Timing',
           id: 'timing',
           accessor: row => row.startTime,
-          className: 'padded',
           width: 170,
           Cell({ value, original }) {
-            const duration: number | undefined = original.duration;
+            const { duration, phase } = original;
             if (!value) return null;
+
+            const sinceQueryStart =
+              new Date(value).valueOf() - (executionStartTime?.valueOf() || 0);
+
             return (
-              <div title={value + (duration ? `/${formatDurationWithMs(duration)}` : '')}>
-                <div>{value.replace('T', ' ').replace(/\.\d\d\dZ$/, '')}</div>
-                <div>{duration ? formatDurationDynamic(duration) : ''}</div>
+              <div
+                className="timing-value"
+                data-tooltip={assemble(
+                  `Start: T+${formatDurationWithMs(sinceQueryStart)} (${value})`,
+                  duration ? `Duration: ${formatDurationWithMs(duration)}` : undefined,
+                ).join('\n')}
+              >
+                {!!executionDuration && executionDuration > 0 && (
+                  <div
+                    className="timing-bar"
+                    style={{
+                      left: `${(sinceQueryStart / executionDuration) * 100}%`,
+                      width: `max(${(duration! / executionDuration) * 100}%, 1px)`,
+                    }}
+                  />
+                )}
+                <div>{`Start: T+${formatDurationWithMsIfNeeded(sinceQueryStart)}`}</div>
+                <div>Duration: {duration ? formatDurationWithMsIfNeeded(duration) : ''}</div>
+                {phase && (
+                  <div className="detail-line">{capitalizeFirst(phase.replace(/_/g, ' '))}</div>
+                )}
               </div>
+            );
+          },
+        },
+        {
+          Header: twoLines(
+            'CPU utilization',
+            <i>
+              <span className="cpu-label">Counter</span>
+              <span className="cpu-counter">Wall time</span>
+            </i>,
+          ),
+          id: 'cpu',
+          accessor: () => null,
+          className: 'padded',
+          width: 240,
+          show: stages.hasCounter('cpu'),
+          Cell({ original }) {
+            const cpuTotals = stages.getCpuTotalsForStage(original);
+            return (
+              <>
+                {filterMap(CPUS_COUNTER_FIELDS, k => {
+                  const v = cpuTotals[k];
+                  if (!v) return;
+                  const fieldTitle = cpusCounterFieldTitle(k);
+                  return (
+                    <div
+                      key={k}
+                      data-tooltip={`${fieldTitle}\nCPU time: ${formatDurationWithMs(
+                        Number(v.cpu) / 1e6,
+                      )}`}
+                    >
+                      <span className="cpu-label">{fieldTitle}</span>
+                      <span className="cpu-counter">
+                        {formatDurationWithMs(Number(v.wall) / 1e6)}
+                      </span>
+                    </div>
+                  );
+                })}
+              </>
             );
           },
         },
@@ -612,35 +1061,43 @@ export const ExecutionStagesPane = React.memo(function ExecutionStagesPane(
           accessor: 'workerCount',
           className: 'padded',
           width: 75,
+          Cell({ value, original }) {
+            const inactiveWorkers = stages.getInactiveWorkerCount(original);
+            if (inactiveWorkers) {
+              return (
+                <div>
+                  <div>{formatInteger(value)}</div>
+                  <div
+                    className="detail-line"
+                    data-tooltip="Workers are counted as active once they report any activity."
+                  >{`${formatInteger(inactiveWorkers)} inactive`}</div>
+                </div>
+              );
+            } else {
+              return formatInteger(value);
+            }
+          },
         },
         {
-          Header: twoLines('Output', 'partitions'),
+          Header: 'Output',
           accessor: 'partitionCount',
           className: 'padded',
-          width: 75,
-        },
-        {
-          Header: 'Cluster by',
-          id: 'clusterBy',
-          className: 'padded',
-          minWidth: 400,
-          accessor: row => formatClusterBy(deepGet(row, 'definition.shuffleSpec.clusterBy')),
+          width: 120,
           Cell({ value, original }) {
+            const { shuffle } = original;
             const clusterBy: ClusterBy | undefined = deepGet(
               original,
               'definition.shuffleSpec.clusterBy',
             );
-            if (!clusterBy) return null;
-            if (clusterBy.bucketByCount) {
-              return (
-                <>
-                  <div>{`Partition by: ${formatClusterBy(clusterBy, 'partition')}`}</div>
-                  <div>{`Cluster by: ${formatClusterBy(clusterBy, 'cluster')}`}</div>
-                </>
-              );
-            } else {
-              return <div title={value}>{value}</div>;
-            }
+            return (
+              <div data-tooltip={clusterBy ? formatClusterBy(clusterBy) : 'No clusterBy'}>
+                <div>{shuffle}</div>
+                <div className="detail-line">{original.output}</div>
+                {typeof value === 'number' ? (
+                  <div className="detail-line">{pluralIfNeeded(value, 'partition')}</div>
+                ) : undefined}
+              </div>
+            );
           },
         },
       ]}

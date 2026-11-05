@@ -18,11 +18,12 @@
 
 import { Button, Callout, Intent, Tag } from '@blueprintjs/core';
 import { IconNames } from '@blueprintjs/icons';
-import { CancelToken } from 'axios';
-import { F, QueryResult, SqlExpression, SqlFunction, SqlQuery } from 'druid-query-toolkit';
-import React, { useEffect } from 'react';
+import type { QueryResult, SqlQuery } from 'druid-query-toolkit';
+import { F, SqlExpression, SqlFunction } from 'druid-query-toolkit';
+import type { JSX } from 'react';
+import React, { useEffect, useEffectEvent } from 'react';
 
-import { Execution } from '../../../../druid-models';
+import type { Execution } from '../../../../druid-models';
 import { executionBackgroundStatusCheck, submitTaskQuery } from '../../../../helpers';
 import { useQueryManager } from '../../../../hooks';
 import { filterMap, formatPercentClapped, IntermediateQueryState } from '../../../../utils';
@@ -150,7 +151,7 @@ export const RollupAnalysisPane = React.memo(function RollupAnalysisPane(
     AnalyzeResult,
     Execution
   >({
-    processQuery: async (analyzeQuery: AnalyzeQuery, cancelToken) => {
+    processQuery: async (analyzeQuery: AnalyzeQuery, signal) => {
       const { expressions, deep } = analyzeQuery;
 
       const groupedAsStrings = expressions.map(ex =>
@@ -177,7 +178,7 @@ export const RollupAnalysisPane = React.memo(function RollupAnalysisPane(
       const res = await submitTaskQuery({
         query: queryString,
         context: {},
-        cancelToken,
+        signal,
       });
 
       if (res instanceof IntermediateQueryState) return res;
@@ -191,9 +192,9 @@ export const RollupAnalysisPane = React.memo(function RollupAnalysisPane(
     backgroundStatusCheck: async (
       execution: Execution,
       analyzeQuery: AnalyzeQuery,
-      cancelToken: CancelToken,
+      signal: AbortSignal,
     ) => {
-      const res = await executionBackgroundStatusCheck(execution, analyzeQuery, cancelToken);
+      const res = await executionBackgroundStatusCheck(execution, analyzeQuery, signal);
       if (res instanceof IntermediateQueryState) return res;
 
       if (res.result) {
@@ -206,10 +207,13 @@ export const RollupAnalysisPane = React.memo(function RollupAnalysisPane(
 
   const analysis = analyzeQueryState.data;
 
-  useEffect(() => {
+  const resetAnalysis = useEffectEvent(() => {
     if (!analysis) return;
     analyzeQueryManager.reset();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  });
+
+  useEffect(() => {
+    resetAnalysis();
   }, [queryResult]);
 
   function renderOverallResult() {
@@ -289,7 +293,7 @@ export const RollupAnalysisPane = React.memo(function RollupAnalysisPane(
 
   return (
     <Callout className="rollup-analysis-pane">
-      <Button className="close" icon={IconNames.CROSS} onClick={onClose} minimal />
+      <Button className="close" icon={IconNames.CROSS} onClick={onClose} variant="minimal" />
       {analyzeQueryState.isInit() && (
         <>
           <p>
@@ -318,7 +322,7 @@ export const RollupAnalysisPane = React.memo(function RollupAnalysisPane(
           />
         </p>
       )}
-      {(singleDimensionSuggestions.length || pairDimensionSuggestions.length > 0) && (
+      {(!!singleDimensionSuggestions.length || pairDimensionSuggestions.length > 0) && (
         <>
           <p>Poor rollup is caused by:</p>
           <p>

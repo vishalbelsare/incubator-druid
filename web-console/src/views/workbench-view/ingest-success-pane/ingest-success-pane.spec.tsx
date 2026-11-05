@@ -16,8 +16,7 @@
  * limitations under the License.
  */
 
-import { shallow } from 'enzyme';
-import React from 'react';
+import { render } from '@testing-library/react';
 
 import { EXECUTION_INGEST_COMPLETE } from '../../../druid-models/mocks';
 
@@ -25,7 +24,7 @@ import { IngestSuccessPane } from './ingest-success-pane';
 
 describe('IngestSuccessPane', () => {
   it('matches snapshot', () => {
-    const comp = shallow(
+    const { container } = render(
       <IngestSuccessPane
         execution={EXECUTION_INGEST_COMPLETE}
         onDetails={() => {}}
@@ -33,6 +32,6 @@ describe('IngestSuccessPane', () => {
       />,
     );
 
-    expect(comp).toMatchSnapshot();
+    expect(container.firstChild).toMatchSnapshot();
   });
 });

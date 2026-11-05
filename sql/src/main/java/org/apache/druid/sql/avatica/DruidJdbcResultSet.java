@@ -26,7 +26,6 @@ import org.apache.druid.java.util.common.IAE;
 import org.apache.druid.java.util.common.ISE;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.concurrent.Execs;
-import org.apache.druid.java.util.common.guava.Sequence;
 import org.apache.druid.java.util.common.guava.Yielder;
 import org.apache.druid.java.util.common.guava.Yielders;
 import org.apache.druid.java.util.common.logger.Logger;
@@ -114,7 +113,7 @@ public class DruidJdbcResultSet implements Closeable
     }
 
     /**
-     * Fetch the next batch up to the batch size or EOF. Return
+     * Fetch the next batch up to the batch size, the row limit, or EOF. Return
      * the resulting frame. Exceptions are handled by the executor
      * framework.
      */
@@ -131,7 +130,10 @@ public class DruidJdbcResultSet implements Closeable
         rowCount++;
       }
 
-      final Meta.Frame result = new Meta.Frame(offset, yielder.isDone(), rows);
+      // The frame is complete once the row limit is reached, even if the query
+      // itself has more rows. Reporting only yielder.isDone() here would make
+      // every later fetch return an empty, not-done frame forever.
+      final Meta.Frame result = new Meta.Frame(offset, yielder.isDone() || offset + rowCount >= limit, rows);
       offset += rowCount;
       return result;
     }
@@ -237,13 +239,12 @@ public class DruidJdbcResultSet implements Closeable
 
       // Execute the first step: plan the query and return a sequence to use
       // to get values.
-      final Sequence<Object[]> sequence = queryExecutor.submit(stmt::execute).get().getResults();
-
+      final Yielder<Object[]> yielder = queryExecutor.submit(() -> Yielders.each(stmt.execute().getResults())).get();
       // Subsequent fetch steps are done via the async "fetcher".
       fetcher = fetcherFactory.newFetcher(
           // We can't apply limits greater than Integer.MAX_VALUE, ignore them.
           maxRowCount >= 0 && maxRowCount <= Integer.MAX_VALUE ? (int) maxRowCount : Integer.MAX_VALUE,
-          Yielders.each(sequence)
+          yielder
       );
       signature = AbstractDruidJdbcStatement.createSignature(
           stmt.prepareResult(),

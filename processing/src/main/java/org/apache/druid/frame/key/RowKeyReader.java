@@ -22,6 +22,7 @@ package org.apache.druid.frame.key;
 import com.google.common.base.Preconditions;
 import com.google.common.primitives.Ints;
 import org.apache.datasketches.memory.Memory;
+import org.apache.druid.frame.FrameType;
 import org.apache.druid.frame.field.FieldReader;
 import org.apache.druid.frame.field.FieldReaders;
 import org.apache.druid.frame.field.RowMemoryFieldPointer;
@@ -46,18 +47,20 @@ import java.util.List;
 public class RowKeyReader
 {
   private final RowSignature signature;
+  private final FrameType frameType;
   private final RowReader rowReader;
 
-  private RowKeyReader(final RowSignature signature, final RowReader rowReader)
+  private RowKeyReader(RowSignature signature, FrameType frameType, RowReader rowReader)
   {
     this.signature = signature;
+    this.frameType = frameType;
     this.rowReader = rowReader;
   }
 
   /**
    * Creates a new {@link RowKeyReader}.
    */
-  public static RowKeyReader create(final RowSignature signature)
+  public static RowKeyReader create(final RowSignature signature, final FrameType frameType)
   {
     final List<FieldReader> fieldReaders = new ArrayList<>(signature.size());
 
@@ -66,10 +69,10 @@ public class RowKeyReader
       final ColumnType columnType =
           Preconditions.checkNotNull(capabilities, "Type for column [%s]", columnName).toColumnType();
 
-      fieldReaders.add(FieldReaders.create(columnName, columnType));
+      fieldReaders.add(FieldReaders.create(columnName, columnType, frameType));
     }
 
-    return new RowKeyReader(signature, new RowReader(fieldReaders));
+    return new RowKeyReader(signature, frameType, new RowReader(fieldReaders));
   }
 
   /**
@@ -125,9 +128,31 @@ public class RowKeyReader
             rowReader.fieldReader(fieldNumber)
                      .makeColumnValueSelector(keyMemory, fieldPointer);
 
-        return selector.getObject() instanceof List;
+        return selector.getObject() instanceof List || selector.getObject() instanceof Object[];
       }
     }
+  }
+
+  /**
+   * Trims the key reader to a particular fieldCount. Used to read keys trimmed by {@link #trim(RowKey, int)}.
+   */
+  public RowKeyReader trimmedKeyReader(int trimmedFieldCount)
+  {
+    final RowSignature.Builder newSignature = RowSignature.builder();
+
+    if (trimmedFieldCount > signature.size()) {
+      throw new IAE("Cannot trim to [%,d] fields, only have [%,d] fields", trimmedFieldCount, signature);
+    }
+
+    for (int i = 0; i < trimmedFieldCount; i++) {
+      final String columnName = signature.getColumnName(i);
+      final ColumnType columnType =
+          Preconditions.checkNotNull(signature.getColumnType(i).orElse(null), "Type for column [%s]", columnName);
+
+      newSignature.add(columnName, columnType);
+    }
+
+    return RowKeyReader.create(newSignature.build(), frameType);
   }
 
   /**

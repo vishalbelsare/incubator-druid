@@ -26,9 +26,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Function;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Maps;
-import org.apache.druid.common.utils.ServletResourceUtils;
 import org.apache.druid.java.util.common.jackson.JacksonUtils;
 import org.apache.druid.java.util.common.logger.Logger;
+import org.apache.druid.server.http.ServletResourceUtils;
 
 import javax.annotation.Nullable;
 import javax.ws.rs.core.Response;
@@ -41,7 +41,7 @@ import java.util.Map;
  *
  * Empty maps `{}` are taken care of at this level and never passed down to the subclass's handle method.
  *
- * @param <ObjType> A List of this type is expected in the input stream as JSON. Must be able to be converted to/from Map<String, Object>
+ * @param <ObjType> A List of this type is expected in the input stream as JSON. Must be able to be converted to/from {@code Map<String, Object>}
  */
 public abstract class AbstractListenerHandler<ObjType> implements ListenerHandler
 {
@@ -87,7 +87,7 @@ public abstract class AbstractListenerHandler<ObjType> implements ListenerHandle
       // Now do the ACTUAL conversion
       inObjMap = ImmutableMap.copyOf(Maps.transformValues(
           tempMap,
-          new Function<Object, ObjType>()
+          new Function<>()
           {
             @Override
             public ObjType apply(Object input)

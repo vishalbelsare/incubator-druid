@@ -23,8 +23,6 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
 import org.apache.druid.data.input.InputSourceReader;
-import org.apache.druid.data.input.impl.InputRowParser;
-import org.apache.druid.data.input.impl.StringInputRowParser;
 import org.apache.druid.java.util.common.ISE;
 import org.apache.druid.query.filter.DimFilter;
 
@@ -66,21 +64,6 @@ public class TransformSpec
     }
   }
 
-  public static <T> TransformSpec fromInputRowParser(final InputRowParser<T> parser)
-  {
-    // Hack: some firehoses and input specs must extract transformSpec from the parser, since they do not
-    // actually use the parser, but still must respect the transformSpec. This method should extract whatever
-    // transformSpec "decorate" had put in.
-
-    if (parser instanceof TransformingInputRowParser) {
-      return ((TransformingInputRowParser) parser).getTransformSpec();
-    } else if (parser instanceof TransformingStringInputRowParser) {
-      return ((TransformingStringInputRowParser) parser).getTransformSpec();
-    } else {
-      throw new ISE("Parser was not decorated, but should have been");
-    }
-  }
-
   @JsonProperty
   @Nullable
   public DimFilter getFilter()
@@ -92,24 +75,6 @@ public class TransformSpec
   public List<Transform> getTransforms()
   {
     return transforms;
-  }
-
-  public <T> InputRowParser<T> decorate(final InputRowParser<T> parser)
-  {
-    // Always decorates, even if the transformSpec is a no-op. This is so fromInputRowParser can insist that the
-    // parser is a transforming parser, and possibly help detect coding errors where someone forgot to call "decorate".
-
-    if (parser instanceof StringInputRowParser) {
-      // Hack to support the fact that some callers use special methods in StringInputRowParser, such as
-      // parse(String) and startFileFromBeginning.
-      return (InputRowParser<T>) new TransformingStringInputRowParser(
-          parser.getParseSpec(),
-          ((StringInputRowParser) parser).getEncoding(),
-          this
-      );
-    } else {
-      return new TransformingInputRowParser<>(parser, this);
-    }
   }
 
   public InputSourceReader decorate(InputSourceReader reader)

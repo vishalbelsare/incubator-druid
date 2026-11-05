@@ -16,10 +16,11 @@
  * limitations under the License.
  */
 
-import { Button, InputGroup, Intent, Position } from '@blueprintjs/core';
-import { DateRange, DateRangePicker, TimePrecision } from '@blueprintjs/datetime';
+import type { Intent } from '@blueprintjs/core';
+import { Button, InputGroup, PopoverNext } from '@blueprintjs/core';
+import type { DateRange } from '@blueprintjs/datetime';
+import { DateRangePicker } from '@blueprintjs/datetime';
 import { IconNames } from '@blueprintjs/icons';
-import { Popover2 } from '@blueprintjs/popover2';
 import React from 'react';
 
 import { intervalToLocalDateRange, localDateRangeToInterval } from '../../utils';
@@ -40,23 +41,26 @@ export const IntervalInput = React.memo(function IntervalInput(props: IntervalIn
       placeholder={placeholder}
       rightElement={
         <div>
-          <Popover2
+          <PopoverNext
             popoverClassName="calendar"
             content={
               <DateRangePicker
-                timePrecision={TimePrecision.SECOND}
                 value={intervalToLocalDateRange(interval)}
                 contiguousCalendarMonths={false}
                 reverseMonthAndYearMenus
                 onChange={(selectedRange: DateRange) => {
                   onValueChange(localDateRangeToInterval(selectedRange));
                 }}
+                timePickerProps={undefined}
+                shortcuts={false}
               />
             }
-            position={Position.BOTTOM_RIGHT}
+            placement="bottom-end"
+            lazy
+            shouldReturnFocusOnClose={false}
           >
-            <Button rightIcon={IconNames.CALENDAR} />
-          </Popover2>
+            <Button endIcon={IconNames.CALENDAR} />
+          </PopoverNext>
         </div>
       }
       onChange={(e: any) => {

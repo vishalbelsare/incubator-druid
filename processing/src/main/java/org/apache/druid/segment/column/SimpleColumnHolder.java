@@ -30,9 +30,10 @@ import javax.annotation.Nullable;
 /**
  *
  */
-class SimpleColumnHolder implements ColumnHolder
+class SimpleColumnHolder implements BaseColumnHolder
 {
   private final ColumnCapabilities capabilities;
+  private final ColumnFormat columnFormat;
 
   @Nullable
   private final Supplier<? extends BaseColumn> columnSupplier;
@@ -45,6 +46,7 @@ class SimpleColumnHolder implements ColumnHolder
 
   SimpleColumnHolder(
       ColumnCapabilities capabilities,
+      @Nullable ColumnFormat columnFormat,
       @Nullable Supplier<? extends BaseColumn> columnSupplier,
       @Nullable ColumnIndexSupplier indexSupplier
   )
@@ -52,6 +54,8 @@ class SimpleColumnHolder implements ColumnHolder
     this.capabilities = capabilities;
     this.columnSupplier = columnSupplier;
     this.indexSupplier = indexSupplier;
+    this.columnFormat = columnFormat == null ? new CapabilitiesBasedFormat(capabilities) : columnFormat;
+
     // ColumnSupplier being null is sort of a rare case but can happen when a segment
     // was created, for example, using an aggregator that was removed in later versions.
     // In such cases we are not able to deserialize the column metadata and determine
@@ -74,6 +78,12 @@ class SimpleColumnHolder implements ColumnHolder
   }
 
   @Override
+  public ColumnFormat getColumnFormat()
+  {
+    return columnFormat;
+  }
+
+  @Override
   public int getLength()
   {
     // Not checking for null here since columnSupplier is expected to be
@@ -87,6 +97,12 @@ class SimpleColumnHolder implements ColumnHolder
   public BaseColumn getColumn()
   {
     return columnSupplier == null ? UnknownTypeComplexColumn.instance() : columnSupplier.get();
+  }
+
+  @Override
+  public Supplier<? extends BaseColumn> getColumnSupplier()
+  {
+    return columnSupplier;
   }
 
   @Nullable

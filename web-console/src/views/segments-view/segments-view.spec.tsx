@@ -16,22 +16,28 @@
  * limitations under the License.
  */
 
-import { shallow } from 'enzyme';
-import React from 'react';
+import { render } from '@testing-library/react';
 
-import { Capabilities } from '../../utils';
+import { Capabilities } from '../../helpers';
+import { TableFilters } from '../../utils/table-filters';
 import { SegmentsView } from '../segments-view/segments-view';
+
+// Snapshot the table props and columns, not every rendered cell
+jest.mock(
+  '../../components/console-table/console-table',
+  () => jest.requireActual('../../test-utils/stub-component').consoleTableStub,
+);
 
 describe('SegmentsView', () => {
   it('matches snapshot', () => {
-    const segmentsView = shallow(
+    const { container } = render(
       <SegmentsView
-        datasource="test"
-        onlyUnavailable={false}
+        filters={TableFilters.empty()}
+        onFiltersChange={() => {}}
         goToQuery={() => {}}
         capabilities={Capabilities.FULL}
       />,
     );
-    expect(segmentsView).toMatchSnapshot();
+    expect(container.firstChild).toMatchSnapshot();
   });
 });

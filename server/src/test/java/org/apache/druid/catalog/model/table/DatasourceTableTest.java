@@ -19,20 +19,40 @@
 
 package org.apache.druid.catalog.model.table;
 
+import com.fasterxml.jackson.databind.InjectableValues;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import nl.jqno.equalsverifier.EqualsVerifier;
-import org.apache.druid.catalog.CatalogTest;
+import org.apache.druid.catalog.model.ClusteredValueGroupsBaseTableMetadata;
 import org.apache.druid.catalog.model.ColumnSpec;
 import org.apache.druid.catalog.model.Columns;
+import org.apache.druid.catalog.model.DatasourceBaseTableMetadata;
+import org.apache.druid.catalog.model.DatasourceProjectionMetadata;
 import org.apache.druid.catalog.model.ResolvedTable;
 import org.apache.druid.catalog.model.TableDefn;
 import org.apache.druid.catalog.model.TableDefnRegistry;
 import org.apache.druid.catalog.model.TableSpec;
-import org.apache.druid.catalog.model.table.DatasourceDefn.DatasourceColumnDefn;
+import org.apache.druid.catalog.model.facade.DatasourceFacade;
+import org.apache.druid.catalog.model.facade.DatasourceFacade.ColumnFacade;
+import org.apache.druid.data.input.impl.AggregateProjectionSpec;
+import org.apache.druid.data.input.impl.StringDimensionSchema;
+import org.apache.druid.error.DruidException;
+import org.apache.druid.guice.BuiltInTypesModule;
+import org.apache.druid.jackson.DefaultObjectMapper;
 import org.apache.druid.java.util.common.IAE;
-import org.junit.Test;
-import org.junit.experimental.categories.Category;
+import org.apache.druid.java.util.common.logger.Logger;
+import org.apache.druid.math.expr.ExprMacroTable;
+import org.apache.druid.query.aggregation.LongSumAggregatorFactory;
+import org.apache.druid.segment.TestHelper;
+import org.apache.druid.segment.VirtualColumns;
+import org.apache.druid.segment.column.ColumnType;
+import org.apache.druid.segment.virtual.ExpressionVirtualColumn;
+import org.apache.druid.testing.InitializedNullHandlingTest;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -40,22 +60,20 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertThrows;
-import static org.junit.Assert.assertTrue;
 
 /**
  * Test of validation and serialization of the catalog table definitions.
  */
-@Category(CatalogTest.class)
-public class DatasourceTableTest
+@Tag("CatalogTest")
+public class DatasourceTableTest extends InitializedNullHandlingTest
 {
-  private static final String SUM_BIGINT = "SUM(BIGINT)";
+  static {
+    BuiltInTypesModule.registerHandlersAndSerde();
+  }
 
-  private final ObjectMapper mapper = new ObjectMapper();
+  private static final Logger LOG = new Logger(DatasourceTableTest.class);
+
+  private final ObjectMapper mapper = DefaultObjectMapper.INSTANCE;
   private final TableDefnRegistry registry = new TableDefnRegistry(mapper);
 
   @Test
@@ -63,28 +81,24 @@ public class DatasourceTableTest
   {
     // Minimum possible definition
     Map<String, Object> props = ImmutableMap.of(
-        AbstractDatasourceDefn.SEGMENT_GRANULARITY_PROPERTY, "P1D"
+        DatasourceDefn.SEGMENT_GRANULARITY_PROPERTY, "P1D"
     );
-    {
-      TableSpec spec = new TableSpec(DatasourceDefn.TABLE_TYPE, props, null);
-      ResolvedTable table = registry.resolve(spec);
-      assertNotNull(table);
-      assertTrue(table.defn() instanceof DatasourceDefn);
-      table.validate();
-    }
 
-    {
-      TableSpec spec = new TableSpec(DatasourceDefn.TABLE_TYPE, props, null);
-      ResolvedTable table = registry.resolve(spec);
-      assertNotNull(table);
-      assertTrue(table.defn() instanceof DatasourceDefn);
-      table.validate();
-    }
+    TableSpec spec = new TableSpec(DatasourceDefn.TABLE_TYPE, props, null);
+    ResolvedTable table = registry.resolve(spec);
+    Assertions.assertNotNull(table);
+    Assertions.assertTrue(table.defn() instanceof DatasourceDefn);
+    table.validate();
+    DatasourceFacade facade = new DatasourceFacade(registry.resolve(table.spec()));
+    Assertions.assertEquals("P1D", facade.segmentGranularityString());
+    Assertions.assertNull(facade.targetSegmentRows());
+    Assertions.assertTrue(facade.hiddenColumns().isEmpty());
+    Assertions.assertFalse(facade.isSealed());
   }
 
   private void expectValidationFails(final ResolvedTable table)
   {
-    assertThrows(IAE.class, () -> table.validate());
+    Assertions.assertThrows(IAE.class, () -> table.validate());
   }
 
   private void expectValidationFails(final TableSpec spec)
@@ -104,19 +118,170 @@ public class DatasourceTableTest
   {
     {
       TableSpec spec = new TableSpec(null, ImmutableMap.of(), null);
-      assertThrows(IAE.class, () -> registry.resolve(spec));
+      Assertions.assertThrows(IAE.class, () -> registry.resolve(spec));
     }
 
     {
       TableSpec spec = new TableSpec(DatasourceDefn.TABLE_TYPE, ImmutableMap.of(), null);
-      ResolvedTable table = registry.resolve(spec);
-      expectValidationFails(table);
+      expectValidationSucceeds(spec);
     }
+  }
 
+  @Test
+  public void testSpecWithClusterKeyProp()
+  {
     {
-      TableSpec spec = new TableSpec(DatasourceDefn.TABLE_TYPE, ImmutableMap.of(), null);
+      TableSpec spec = new TableSpec(
+          DatasourceDefn.TABLE_TYPE,
+          ImmutableMap.of(DatasourceDefn.CLUSTER_KEYS_PROPERTY, ImmutableList.of(new ClusterKeySpec("clusterKeyA", true))),
+          null
+      );
       expectValidationFails(spec);
     }
+
+    {
+      TableSpec spec = new TableSpec(
+          DatasourceDefn.TABLE_TYPE,
+          ImmutableMap.of(DatasourceDefn.CLUSTER_KEYS_PROPERTY, ImmutableList.of(new ClusterKeySpec("clusterKeyA", false))),
+          null
+      );
+      expectValidationSucceeds(spec);
+    }
+  }
+
+  @Test
+  public void testSpecWithBaseTableProp()
+  {
+    // The declared column order is the physical segment order: the clustering columns must lead.
+    final List<ColumnSpec> columns = Arrays.asList(
+        new ColumnSpec("tenant", Columns.SQL_VARCHAR, null),
+        new ColumnSpec(Columns.TIME_COLUMN, null, null),
+        new ColumnSpec("region", Columns.SQL_VARCHAR, null)
+    );
+
+    {
+      TableSpec spec = new TableSpec(
+          DatasourceDefn.TABLE_TYPE,
+          ImmutableMap.of(
+              DatasourceDefn.SEALED_PROPERTY, true,
+              DatasourceDefn.BASE_TABLE_PROPERTY,
+              new ClusteredValueGroupsBaseTableMetadata(Collections.singletonList("tenant"), null, null)
+          ),
+          columns
+      );
+      expectValidationSucceeds(spec);
+    }
+
+    {
+      // A base table layout does not require 'sealed': columns the table does not declare are appended after the
+      // declared ones at ingest time rather than dropped.
+      TableSpec spec = new TableSpec(
+          DatasourceDefn.TABLE_TYPE,
+          ImmutableMap.of(
+              DatasourceDefn.BASE_TABLE_PROPERTY,
+              new ClusteredValueGroupsBaseTableMetadata(Collections.singletonList("tenant"), null, null)
+          ),
+          columns
+      );
+      expectValidationSucceeds(spec);
+    }
+
+    {
+      // Validation is cross-checked against the declared columns: an undeclared clustering column fails at
+      // catalog write time.
+      TableSpec spec = new TableSpec(
+          DatasourceDefn.TABLE_TYPE,
+          ImmutableMap.of(
+              DatasourceDefn.SEALED_PROPERTY, true,
+              DatasourceDefn.BASE_TABLE_PROPERTY,
+              new ClusteredValueGroupsBaseTableMetadata(Collections.singletonList("no_such_column"), null, null)
+          ),
+          columns
+      );
+      ResolvedTable table = registry.resolve(spec);
+      Assertions.assertThrows(DruidException.class, table::validate);
+    }
+
+    {
+      // The clustering columns must be declared as the leading prefix of the column list; declared-but-not-first
+      // is an error, not a silent reorder.
+      TableSpec spec = new TableSpec(
+          DatasourceDefn.TABLE_TYPE,
+          ImmutableMap.of(
+              DatasourceDefn.SEALED_PROPERTY, true,
+              DatasourceDefn.BASE_TABLE_PROPERTY,
+              new ClusteredValueGroupsBaseTableMetadata(Collections.singletonList("region"), null, null)
+          ),
+          columns
+      );
+      ResolvedTable table = registry.resolve(spec);
+      Assertions.assertThrows(DruidException.class, table::validate);
+    }
+
+    {
+      // __time must be declared in the column list.
+      TableSpec spec = new TableSpec(
+          DatasourceDefn.TABLE_TYPE,
+          ImmutableMap.of(
+              DatasourceDefn.SEALED_PROPERTY, true,
+              DatasourceDefn.BASE_TABLE_PROPERTY,
+              new ClusteredValueGroupsBaseTableMetadata(Collections.singletonList("tenant"), null, null)
+          ),
+          Collections.singletonList(new ColumnSpec("tenant", Columns.SQL_VARCHAR, null))
+      );
+      ResolvedTable table = registry.resolve(spec);
+      Assertions.assertThrows(DruidException.class, table::validate);
+    }
+  }
+
+  @Test
+  public void testBaseTableFacade()
+  {
+    final ObjectMapper mapperWithInjectables = new DefaultObjectMapper().setInjectableValues(
+        new InjectableValues.Std().addValue(ExprMacroTable.class, ExprMacroTable.nil())
+    );
+    final TableDefnRegistry registryWithInjectables = new TableDefnRegistry(mapperWithInjectables);
+    final DatasourceBaseTableMetadata baseTable = new ClusteredValueGroupsBaseTableMetadata(
+        Collections.singletonList("tenant_lower"),
+        VirtualColumns.create(
+            new ExpressionVirtualColumn("tenant_lower", "lower(\"tenant\")", ColumnType.STRING, ExprMacroTable.nil())
+        ),
+        null
+    );
+    TableSpec spec = new TableSpec(
+        DatasourceDefn.TABLE_TYPE,
+        ImmutableMap.of(
+            DatasourceDefn.SEALED_PROPERTY, true,
+            DatasourceDefn.BASE_TABLE_PROPERTY, baseTable
+        ),
+        Arrays.asList(
+            new ColumnSpec("tenant_lower", Columns.SQL_VARCHAR, null),
+            new ColumnSpec(Columns.TIME_COLUMN, null, null),
+            new ColumnSpec("tenant", Columns.SQL_VARCHAR, null)
+        )
+    );
+    ResolvedTable table = registryWithInjectables.resolve(spec);
+    table.validate();
+    DatasourceFacade facade = new DatasourceFacade(table);
+    Assertions.assertEquals(baseTable, facade.baseTableMetadata());
+
+    // insertColumn enforces the catalog write rules: declared columns resolve, undeclared columns are rejected by
+    // the sealed schema, and columns computed by a virtual column at ingest time cannot be written directly.
+    Assertions.assertSame(facade.column("tenant"), facade.insertColumn("tenant", "druid.tbl"));
+    DruidException sealedError =
+        Assertions.assertThrows(DruidException.class, () -> facade.insertColumn("no_such_column", "druid.tbl"));
+    Assertions.assertTrue(sealedError.getMessage().contains("not defined in the target table [druid.tbl] strict schema"));
+    DruidException computedError =
+        Assertions.assertThrows(DruidException.class, () -> facade.insertColumn("tenant_lower", "druid.tbl"));
+    Assertions.assertTrue(computedError.getMessage().contains("computed by a virtual column at ingest time"));
+
+    // An undeclared column of a non-sealed table resolves to null: the caller adds it from the query type.
+    DatasourceFacade unsealed = new DatasourceFacade(registryWithInjectables.resolve(new TableSpec(
+        DatasourceDefn.TABLE_TYPE,
+        ImmutableMap.of(),
+        Collections.singletonList(new ColumnSpec(Columns.TIME_COLUMN, null, null))
+    )));
+    Assertions.assertNull(unsealed.insertColumn("anything", "druid.tbl"));
   }
 
   @Test
@@ -124,20 +289,20 @@ public class DatasourceTableTest
   {
     Map<String, Object> props = ImmutableMap.<String, Object>builder()
         .put(TableDefn.DESCRIPTION_PROPERTY, "My table")
-        .put(AbstractDatasourceDefn.SEGMENT_GRANULARITY_PROPERTY, "P1D")
-        .put(AbstractDatasourceDefn.TARGET_SEGMENT_ROWS_PROPERTY, 1_000_000)
-        .put(AbstractDatasourceDefn.HIDDEN_COLUMNS_PROPERTY, Arrays.asList("foo", "bar"))
+        .put(DatasourceDefn.SEGMENT_GRANULARITY_PROPERTY, "P1D")
+        .put(DatasourceDefn.TARGET_SEGMENT_ROWS_PROPERTY, 1_000_000)
+        .put(DatasourceDefn.HIDDEN_COLUMNS_PROPERTY, Arrays.asList("foo", "bar"))
+        .put(DatasourceDefn.SEALED_PROPERTY, true)
+        .put(DatasourceDefn.CLUSTER_KEYS_PROPERTY, ImmutableList.of(new ClusterKeySpec("clusterKeyA", false)))
         .build();
 
-    {
-      TableSpec spec = new TableSpec(DatasourceDefn.TABLE_TYPE, props, null);
-      expectValidationSucceeds(spec);
-    }
-
-    {
-      TableSpec spec = new TableSpec(DatasourceDefn.TABLE_TYPE, props, null);
-      expectValidationSucceeds(spec);
-    }
+    TableSpec spec = new TableSpec(DatasourceDefn.TABLE_TYPE, props, null);
+    DatasourceFacade facade = new DatasourceFacade(registry.resolve(spec));
+    Assertions.assertEquals("P1D", facade.segmentGranularityString());
+    Assertions.assertEquals(1_000_000, (int) facade.targetSegmentRows());
+    Assertions.assertEquals(Arrays.asList("foo", "bar"), facade.hiddenColumns());
+    Assertions.assertEquals(Collections.singletonList(new ClusterKeySpec("clusterKeyA", false)), facade.clusterKeys());
+    Assertions.assertTrue(facade.isSealed());
   }
 
   @Test
@@ -145,7 +310,7 @@ public class DatasourceTableTest
   {
     {
       TableSpec spec = new TableSpec("bogus", ImmutableMap.of(), null);
-      assertThrows(IAE.class, () -> registry.resolve(spec));
+      Assertions.assertThrows(IAE.class, () -> registry.resolve(spec));
     }
 
     // Segment granularity
@@ -162,7 +327,7 @@ public class DatasourceTableTest
     // Target segment rows
     {
       TableSpec spec = TableBuilder.datasource("foo", "P1D")
-          .property(AbstractDatasourceDefn.TARGET_SEGMENT_ROWS_PROPERTY, "bogus")
+          .property(DatasourceDefn.TARGET_SEGMENT_ROWS_PROPERTY, "bogus")
           .buildSpec();
       expectValidationFails(spec);
     }
@@ -170,13 +335,21 @@ public class DatasourceTableTest
     // Hidden columns
     {
       TableSpec spec = TableBuilder.datasource("foo", "P1D")
-          .property(AbstractDatasourceDefn.HIDDEN_COLUMNS_PROPERTY, "bogus")
+          .property(DatasourceDefn.HIDDEN_COLUMNS_PROPERTY, "bogus")
           .buildSpec();
       expectValidationFails(spec);
     }
     {
       TableSpec spec = TableBuilder.datasource("foo", "P1D")
           .hiddenColumns("a", Columns.TIME_COLUMN)
+          .buildSpec();
+      expectValidationFails(spec);
+    }
+
+    // Sealed
+    {
+      TableSpec spec = TableBuilder.datasource("foo", "P1D")
+          .property(DatasourceDefn.SEALED_PROPERTY, "bogus")
           .buildSpec();
       expectValidationFails(spec);
     }
@@ -195,31 +368,25 @@ public class DatasourceTableTest
   @Test
   public void testColumnSpec()
   {
-    // Type is required
-    {
-      ColumnSpec spec = new ColumnSpec(null, null, null, null);
-      assertThrows(IAE.class, () -> spec.validate());
-    }
-
     // Name is required
     {
-      ColumnSpec spec = new ColumnSpec(DatasourceColumnDefn.COLUMN_TYPE, null, null, null);
-      assertThrows(IAE.class, () -> spec.validate());
+      ColumnSpec spec = new ColumnSpec(null, null, null);
+      Assertions.assertThrows(IAE.class, () -> spec.validate());
     }
     {
-      ColumnSpec spec = new ColumnSpec(DatasourceColumnDefn.COLUMN_TYPE, "foo", null, null);
+      ColumnSpec spec = new ColumnSpec("foo", null, null);
       spec.validate();
     }
 
     // Type is optional
     {
-      ColumnSpec spec = new ColumnSpec(DatasourceColumnDefn.COLUMN_TYPE, "foo", "VARCHAR", null);
+      ColumnSpec spec = new ColumnSpec("foo", "VARCHAR", null);
       spec.validate();
     }
   }
 
   @Test
-  public void testDetailTableColumns()
+  public void testColumns()
   {
     TableBuilder builder = TableBuilder.datasource("foo", "P1D");
 
@@ -227,7 +394,10 @@ public class DatasourceTableTest
     {
       TableSpec spec = builder.copy()
           .buildSpec();
-      expectValidationSucceeds(spec);
+      ResolvedTable table = registry.resolve(spec);
+      table.validate();
+      DatasourceFacade facade = new DatasourceFacade(registry.resolve(table.spec()));
+      Assertions.assertTrue(facade.columnFacades().isEmpty());
     }
 
     // OK to have no column type
@@ -235,15 +405,218 @@ public class DatasourceTableTest
       TableSpec spec = builder.copy()
           .column("foo", null)
           .buildSpec();
+      ResolvedTable table = registry.resolve(spec);
+      table.validate();
+
+      DatasourceFacade facade = new DatasourceFacade(registry.resolve(table.spec()));
+      Assertions.assertEquals(1, facade.columnFacades().size());
+      ColumnFacade col = facade.columnFacades().get(0);
+      Assertions.assertSame(spec.columns().get(0), col.spec());
+      Assertions.assertFalse(col.isTime());
+      Assertions.assertFalse(col.hasType());
+      Assertions.assertNull(col.druidType());
+    }
+
+    // Can have a legal scalar type
+    {
+      TableSpec spec = builder.copy()
+          .column("foo", Columns.STRING)
+          .buildSpec();
+      ResolvedTable table = registry.resolve(spec);
+      table.validate();
+      DatasourceFacade facade = new DatasourceFacade(registry.resolve(table.spec()));
+      Assertions.assertEquals(1, facade.columnFacades().size());
+      ColumnFacade col = facade.columnFacades().get(0);
+      Assertions.assertSame(spec.columns().get(0), col.spec());
+      Assertions.assertFalse(col.isTime());
+      Assertions.assertTrue(col.hasType());
+      Assertions.assertSame(ColumnType.STRING, col.druidType());
+    }
+
+    // Reject duplicate columns
+    {
+      TableSpec spec = builder.copy()
+          .column("foo", Columns.STRING)
+          .column("bar", Columns.LONG)
+          .buildSpec();
       expectValidationSucceeds(spec);
     }
+    {
+      TableSpec spec = builder.copy()
+          .column("foo", Columns.STRING)
+          .column("foo", Columns.LONG)
+          .buildSpec();
+      expectValidationFails(spec);
+    }
+
+    // A declared type must parse to a Druid type; no type at all remains legal (covered above).
+    {
+      TableSpec spec = builder.copy()
+          .column("foo", "FOO")
+          .buildSpec();
+      DruidException e = Assertions.assertThrows(DruidException.class, () -> registry.resolve(spec).validate());
+      Assertions.assertTrue(e.getMessage().contains("Column [foo] has an unrecognized type [FOO]"));
+    }
+    {
+      // A parameterized type missing its closing bracket is malformed, and must not silently pass as undeclared.
+      TableSpec spec = builder.copy()
+          .column("foo", "COMPLEX<json")
+          .buildSpec();
+      DruidException e = Assertions.assertThrows(DruidException.class, () -> registry.resolve(spec).validate());
+      Assertions.assertTrue(e.getMessage().contains("Column [foo] has an unrecognized type [COMPLEX<json]"));
+    }
+    {
+      // An unrecognized array element type is an invalid input, not an internal error.
+      TableSpec spec = builder.copy()
+          .column("foo", "ARRAY<FOO>")
+          .buildSpec();
+      DruidException e = Assertions.assertThrows(DruidException.class, () -> registry.resolve(spec).validate());
+      Assertions.assertTrue(e.getMessage().contains("Column [foo] has an unrecognized type [ARRAY<FOO>]"));
+    }
+    {
+      // A registered complex type is accepted: json is registered by the static BuiltInTypesModule call above, as it
+      // is on any server by the module itself.
+      TableSpec spec = builder.copy()
+          .column("foo", "COMPLEX<json>")
+          .buildSpec();
+      expectValidationSucceeds(spec);
+    }
+    {
+      // A well-formed complex type that no loaded extension registers is a typo or a missing extension either way,
+      // and is rejected at write time rather than at the first ingest or query that touches the column.
+      TableSpec spec = builder.copy()
+          .column("foo", "COMPLEX<thetaSketch>")
+          .buildSpec();
+      DruidException e = Assertions.assertThrows(DruidException.class, () -> registry.resolve(spec).validate());
+      Assertions.assertEquals(
+          "Column [foo] declares complex type [COMPLEX<thetaSketch>], which is not registered on this server."
+          + " Load the extension that provides the type, or correct the type name",
+          e.getMessage()
+      );
+    }
+    {
+      // The registry check reaches through array wrappers to the element type.
+      TableSpec spec = builder.copy()
+          .column("foo", "ARRAY<COMPLEX<thetaSketch>>")
+          .buildSpec();
+      DruidException e = Assertions.assertThrows(DruidException.class, () -> registry.resolve(spec).validate());
+      Assertions.assertEquals(
+          "Column [foo] declares complex type [ARRAY<COMPLEX<thetaSketch>>], which is not registered on this server."
+          + " Load the extension that provides the type, or correct the type name",
+          e.getMessage()
+      );
+    }
+  }
+
+  /**
+   * Projections hold polymorphic aggregators and dimension schemas, so validating them needs a mapper that knows
+   * those subtypes; the shared mapper in this class does not register them.
+   */
+  @Test
+  public void testProjectionValidation()
+  {
+    final TableDefnRegistry projectionRegistry = new TableDefnRegistry(TestHelper.makeJsonMapper());
+    final TableBuilder builder = TableBuilder.datasource("foo", "P1D")
+                                             .timeColumn()
+                                             .column("dim", Columns.SQL_VARCHAR)
+                                             .column("met", Columns.SQL_BIGINT);
+
+    final AggregateProjectionSpec good = AggregateProjectionSpec
+        .builder("daily")
+        .groupingColumns(new StringDimensionSchema("dim"))
+        .aggregators(new LongSumAggregatorFactory("sum_met", "met"))
+        .build();
+
+    projectionRegistry.resolve(
+        builder.copy()
+               .property(DatasourceDefn.PROJECTIONS_KEYS_PROPERTY, List.of(new DatasourceProjectionMetadata(good)))
+               .buildSpec()
+    ).validate();
+
+    // Two projections cannot share a name.
+    final TableSpec duplicateNames =
+        builder.copy()
+               .property(
+                   DatasourceDefn.PROJECTIONS_KEYS_PROPERTY,
+                   List.of(new DatasourceProjectionMetadata(good), new DatasourceProjectionMetadata(good))
+               )
+               .buildSpec();
+    Assertions.assertThrows(DruidException.class, () -> projectionRegistry.resolve(duplicateNames).validate());
+
+    // A sealed table declares its whole schema, so a projection over an undeclared column can never be built.
+    final AggregateProjectionSpec undeclared = AggregateProjectionSpec
+        .builder("bad")
+        .groupingColumns(new StringDimensionSchema("nope"))
+        .aggregators(new LongSumAggregatorFactory("sum_met", "met"))
+        .build();
+
+    final TableSpec sealedWithUndeclared =
+        builder.copy()
+               .sealed(true)
+               .property(
+                   DatasourceDefn.PROJECTIONS_KEYS_PROPERTY,
+                   List.of(new DatasourceProjectionMetadata(undeclared))
+               )
+               .buildSpec();
+    final DruidException e = Assertions.assertThrows(
+        DruidException.class,
+        () -> projectionRegistry.resolve(sealedWithUndeclared).validate()
+    );
+    Assertions.assertEquals(
+        "Projection [bad] references column [nope], which the table does not declare",
+        e.getMessage()
+    );
+
+    // Ingestion may add columns to a table that is not sealed, so the same projection is allowed there.
+    projectionRegistry.resolve(
+        builder.copy()
+               .property(
+                   DatasourceDefn.PROJECTIONS_KEYS_PROPERTY,
+                   List.of(new DatasourceProjectionMetadata(undeclared))
+               )
+               .buildSpec()
+    ).validate();
+
+    // A projection groups by the type the column had when it was defined, so a table that now declares a different
+    // type for that column carries a projection it can no longer build. Not limited to sealed tables: an undeclared
+    // column has no type to disagree with, but a declared one does.
+    final TableSpec retypedGroupingColumn =
+        TableBuilder.datasource("foo", "P1D")
+                    .timeColumn()
+                    .column("dim", Columns.SQL_BIGINT)
+                    .column("met", Columns.SQL_BIGINT)
+                    .property(DatasourceDefn.PROJECTIONS_KEYS_PROPERTY, List.of(new DatasourceProjectionMetadata(good)))
+                    .buildSpec();
+    final DruidException retyped = Assertions.assertThrows(
+        DruidException.class,
+        () -> projectionRegistry.resolve(retypedGroupingColumn).validate()
+    );
+    Assertions.assertTrue(
+        retyped.getMessage().contains("groups on column [dim] as type [STRING], but the table declares it as type [LONG]"),
+        retyped.getMessage()
+    );
+  }
+
+  @Test
+  public void testTimeColumn()
+  {
+    TableBuilder builder = TableBuilder.datasource("foo", "P1D");
 
     // Time column can have no type
     {
       TableSpec spec = builder.copy()
           .column(Columns.TIME_COLUMN, null)
           .buildSpec();
-      expectValidationSucceeds(spec);
+      ResolvedTable table = registry.resolve(spec);
+      table.validate();
+
+      DatasourceFacade facade = new DatasourceFacade(registry.resolve(table.spec()));
+      Assertions.assertEquals(1, facade.columnFacades().size());
+      ColumnFacade col = facade.columnFacades().get(0);
+      Assertions.assertSame(spec.columns().get(0), col.spec());
+      Assertions.assertTrue(col.isTime());
+      Assertions.assertTrue(col.hasType());
+      Assertions.assertSame(ColumnType.LONG, col.druidType());
     }
 
     // Time column can only have TIMESTAMP type
@@ -251,51 +624,30 @@ public class DatasourceTableTest
       TableSpec spec = builder.copy()
           .timeColumn()
           .buildSpec();
-      expectValidationSucceeds(spec);
-    }
-    {
-      TableSpec spec = builder.copy()
-          .column(Columns.TIME_COLUMN, Columns.VARCHAR)
-          .buildSpec();
-      expectValidationFails(spec);
-    }
-
-    // Can have a legal scalar type
-    {
-      TableSpec spec = builder.copy()
-          .column("foo", Columns.VARCHAR)
-          .buildSpec();
-      expectValidationSucceeds(spec);
+      ResolvedTable table = registry.resolve(spec);
+      table.validate();
+      DatasourceFacade facade = new DatasourceFacade(registry.resolve(table.spec()));
+      Assertions.assertEquals(1, facade.columnFacades().size());
+      ColumnFacade col = facade.columnFacades().get(0);
+      Assertions.assertSame(spec.columns().get(0), col.spec());
+      Assertions.assertTrue(col.isTime());
+      Assertions.assertTrue(col.hasType());
+      Assertions.assertSame(ColumnType.LONG, col.druidType());
     }
 
-    // Reject an unknown SQL type
-    {
+    // Any spelling that resolves to a LONG is accepted: TIMESTAMP is how SQL names the time column, BIGINT is its
+    // SQL storage type, and LONG is the native name.
+    for (String timeType : new String[]{Columns.SQL_TIMESTAMP, Columns.SQL_BIGINT, Columns.LONG, "long"}) {
       TableSpec spec = builder.copy()
-          .column("foo", "BOGUS")
+          .column(Columns.TIME_COLUMN, timeType)
           .buildSpec();
-      expectValidationFails(spec);
+      registry.resolve(spec).validate();
     }
 
-    // Cannot use a measure type
-    {
+    // Types that do not resolve to a LONG are rejected, as are types that do not resolve at all.
+    for (String badType : new String[]{Columns.STRING, Columns.SQL_VARCHAR, Columns.SQL_DOUBLE, "NOT_A_TYPE"}) {
       TableSpec spec = builder.copy()
-          .column("foo", SUM_BIGINT)
-          .buildSpec();
-      expectValidationFails(spec);
-    }
-
-    // Reject duplicate columns
-    {
-      TableSpec spec = builder.copy()
-          .column("foo", Columns.VARCHAR)
-          .column("bar", Columns.BIGINT)
-          .buildSpec();
-      expectValidationSucceeds(spec);
-    }
-    {
-      TableSpec spec = builder.copy()
-          .column("foo", Columns.VARCHAR)
-          .column("foo", Columns.BIGINT)
+          .column(Columns.TIME_COLUMN, badType)
           .buildSpec();
       expectValidationFails(spec);
     }
@@ -320,12 +672,12 @@ public class DatasourceTableTest
         .build();
     TableSpec spec = TableBuilder.datasource("foo", "PT1H")
         .description("My table")
-        .property(AbstractDatasourceDefn.TARGET_SEGMENT_ROWS_PROPERTY, 1_000_000)
+        .property(DatasourceDefn.TARGET_SEGMENT_ROWS_PROPERTY, 1_000_000)
         .hiddenColumns("foo", "bar")
         .property("tag1", "some value")
         .property("tag2", "second value")
-        .column(new ColumnSpec(DatasourceColumnDefn.COLUMN_TYPE, "a", null, colProps))
-        .column("b", Columns.VARCHAR)
+        .column(new ColumnSpec("a", null, colProps))
+        .column("b", Columns.STRING)
         .buildSpec();
 
     // Sanity check
@@ -336,7 +688,7 @@ public class DatasourceTableTest
   private TableSpec mergeTables(TableSpec spec, TableSpec update)
   {
     ResolvedTable table = registry.resolve(spec);
-    assertNotNull(table);
+    Assertions.assertNotNull(table);
     return table.merge(update).spec();
   }
 
@@ -347,12 +699,12 @@ public class DatasourceTableTest
     TableSpec update = new TableSpec(null, null, null);
 
     TableSpec merged = mergeTables(spec, update);
-    assertEquals(spec, merged);
+    Assertions.assertEquals(spec, merged);
   }
 
   private void assertMergeFails(TableSpec spec, TableSpec update)
   {
-    assertThrows(IAE.class, () -> mergeTables(spec, update));
+    Assertions.assertThrows(IAE.class, () -> mergeTables(spec, update));
   }
 
   @Test
@@ -368,7 +720,7 @@ public class DatasourceTableTest
     // Same type
     update = new TableSpec(spec.type(), null, null);
     TableSpec merged = mergeTables(spec, update);
-    assertEquals(spec, merged);
+    Assertions.assertEquals(spec, merged);
   }
 
   @Test
@@ -381,7 +733,7 @@ public class DatasourceTableTest
     // such values to indicate which properties to remove.
     Map<String, Object> updatedProps = new HashMap<>();
     // Update a property
-    updatedProps.put(AbstractDatasourceDefn.SEGMENT_GRANULARITY_PROPERTY, "P1D");
+    updatedProps.put(DatasourceDefn.SEGMENT_GRANULARITY_PROPERTY, "P1D");
     // Remove a property
     updatedProps.put("tag1", null);
     // Add a property
@@ -394,13 +746,13 @@ public class DatasourceTableTest
     // We know that an empty map will leave the spec unchanged
     // due to testMergeEmpty. Here we verify those that we
     // changed.
-    assertNotEquals(spec, merged);
-    assertEquals(
-        updatedProps.get(AbstractDatasourceDefn.SEGMENT_GRANULARITY_PROPERTY),
-        merged.properties().get(AbstractDatasourceDefn.SEGMENT_GRANULARITY_PROPERTY)
+    Assertions.assertNotEquals(spec, merged);
+    Assertions.assertEquals(
+        updatedProps.get(DatasourceDefn.SEGMENT_GRANULARITY_PROPERTY),
+        merged.properties().get(DatasourceDefn.SEGMENT_GRANULARITY_PROPERTY)
     );
-    assertFalse(merged.properties().containsKey("tag1"));
-    assertEquals(
+    Assertions.assertFalse(merged.properties().containsKey("tag1"));
+    Assertions.assertEquals(
         updatedProps.get("tag3"),
         merged.properties().get("tag3")
     );
@@ -413,32 +765,32 @@ public class DatasourceTableTest
 
     // Remove all hidden columns
     Map<String, Object> updatedProps = new HashMap<>();
-    updatedProps.put(AbstractDatasourceDefn.HIDDEN_COLUMNS_PROPERTY, null);
+    updatedProps.put(DatasourceDefn.HIDDEN_COLUMNS_PROPERTY, null);
     TableSpec update = new TableSpec(null, updatedProps, null);
     TableSpec merged = mergeTables(spec, update);
     expectValidationSucceeds(merged);
-    assertFalse(
-        merged.properties().containsKey(AbstractDatasourceDefn.HIDDEN_COLUMNS_PROPERTY)
+    Assertions.assertFalse(
+        merged.properties().containsKey(DatasourceDefn.HIDDEN_COLUMNS_PROPERTY)
     );
 
     // Wrong type
     updatedProps = ImmutableMap.of(
-        AbstractDatasourceDefn.HIDDEN_COLUMNS_PROPERTY, "mumble"
+        DatasourceDefn.HIDDEN_COLUMNS_PROPERTY, "mumble"
     );
     update = new TableSpec(null, updatedProps, null);
     assertMergeFails(spec, update);
 
     // Merge
     updatedProps = ImmutableMap.of(
-        AbstractDatasourceDefn.HIDDEN_COLUMNS_PROPERTY, Collections.singletonList("mumble")
+        DatasourceDefn.HIDDEN_COLUMNS_PROPERTY, Collections.singletonList("mumble")
     );
     update = new TableSpec(null, updatedProps, null);
     merged = mergeTables(spec, update);
     expectValidationSucceeds(merged);
 
-    assertEquals(
+    Assertions.assertEquals(
         Arrays.asList("foo", "bar", "mumble"),
-        merged.properties().get(AbstractDatasourceDefn.HIDDEN_COLUMNS_PROPERTY)
+        merged.properties().get(DatasourceDefn.HIDDEN_COLUMNS_PROPERTY)
     );
   }
 
@@ -446,24 +798,23 @@ public class DatasourceTableTest
   public void testMergeColsWithEmptyList()
   {
     Map<String, Object> props = ImmutableMap.of(
-        AbstractDatasourceDefn.SEGMENT_GRANULARITY_PROPERTY, "P1D"
+        DatasourceDefn.SEGMENT_GRANULARITY_PROPERTY, "P1D"
     );
     TableSpec spec = new TableSpec(DatasourceDefn.TABLE_TYPE, props, null);
 
     List<ColumnSpec> colUpdates = Collections.singletonList(
         new ColumnSpec(
-            DatasourceColumnDefn.COLUMN_TYPE,
             "a",
-            Columns.BIGINT,
+            Columns.LONG,
             null
         )
     );
     TableSpec update = new TableSpec(null, null, colUpdates);
     TableSpec merged = mergeTables(spec, update);
     List<ColumnSpec> columns = merged.columns();
-    assertEquals(1, columns.size());
-    assertEquals("a", columns.get(0).name());
-    assertEquals(Columns.BIGINT, columns.get(0).sqlType());
+    Assertions.assertEquals(1, columns.size());
+    Assertions.assertEquals("a", columns.get(0).name());
+    Assertions.assertEquals(Columns.LONG, columns.get(0).dataType());
   }
 
   @Test
@@ -481,32 +832,52 @@ public class DatasourceTableTest
 
     List<ColumnSpec> colUpdates = Arrays.asList(
         new ColumnSpec(
-            DatasourceColumnDefn.COLUMN_TYPE,
             "a",
-            Columns.BIGINT,
+            Columns.LONG,
             updatedProps
         ),
         new ColumnSpec(
-            DatasourceColumnDefn.COLUMN_TYPE,
             "c",
-            Columns.VARCHAR,
+            Columns.STRING,
             null
         )
     );
     TableSpec update = new TableSpec(null, null, colUpdates);
     TableSpec merged = mergeTables(spec, update);
 
-    assertNotEquals(spec, merged);
+    Assertions.assertNotEquals(spec, merged);
     List<ColumnSpec> columns = merged.columns();
-    assertEquals(3, columns.size());
-    assertEquals("a", columns.get(0).name());
-    assertEquals(Columns.BIGINT, columns.get(0).sqlType());
+    Assertions.assertEquals(3, columns.size());
+    Assertions.assertEquals("a", columns.get(0).name());
+    Assertions.assertEquals(Columns.LONG, columns.get(0).dataType());
     Map<String, Object> colProps = columns.get(0).properties();
-    assertEquals(2, colProps.size());
-    assertEquals("new value", colProps.get("colProp1"));
-    assertEquals("third value", colProps.get("tag3"));
+    Assertions.assertEquals(2, colProps.size());
+    Assertions.assertEquals("new value", colProps.get("colProp1"));
+    Assertions.assertEquals("third value", colProps.get("tag3"));
 
-    assertEquals("c", columns.get(2).name());
-    assertEquals(Columns.VARCHAR, columns.get(2).sqlType());
+    Assertions.assertEquals("c", columns.get(2).name());
+    Assertions.assertEquals(Columns.STRING, columns.get(2).dataType());
+  }
+
+  /**
+   * Test case for multiple of the {@code datasource.md} examples. To use this, enable the
+   * test, run it, then copy the JSON from the console. The examples pull out bits
+   * and pieces in multiple places.
+   */
+  @Test
+  @Disabled
+  public void docExample()
+  {
+    TableSpec spec = TableBuilder.datasource("foo", "PT1H")
+        .description("Web server performance metrics")
+        .property(DatasourceDefn.TARGET_SEGMENT_ROWS_PROPERTY, 1_000_000)
+        .hiddenColumns("foo", "bar")
+        .column("__time", Columns.LONG)
+        .column("host", Columns.STRING, ImmutableMap.of(TableDefn.DESCRIPTION_PROPERTY, "The web server host"))
+        .column("bytesSent", Columns.LONG, ImmutableMap.of(TableDefn.DESCRIPTION_PROPERTY, "Number of response bytes sent"))
+        .clusterColumns(new ClusterKeySpec("a", false), new ClusterKeySpec("b", true))
+        .sealed(true)
+        .buildSpec();
+    LOG.info(spec.toString());
   }
 }

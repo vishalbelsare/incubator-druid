@@ -19,9 +19,11 @@
 
 package org.apache.druid.frame.processor;
 
+import com.google.common.base.Preconditions;
 import it.unimi.dsi.fastutil.ints.Int2ObjectRBTreeMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectSortedMap;
 import it.unimi.dsi.fastutil.ints.IntSortedSet;
+import org.apache.druid.frame.channel.ReadableFrameChannel;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -65,12 +67,23 @@ public class OutputChannels
   }
 
   /**
-   * Creates an instance wrapping read-only versions (see {@link OutputChannel#readOnly()}) of all the
-   * provided channels.
+   * Verifies there is exactly one channel per partition.
    */
-  public static OutputChannels wrapReadOnly(final List<OutputChannel> outputChannels)
+  public OutputChannels verifySingleChannel()
   {
-    return new OutputChannels(outputChannels.stream().map(OutputChannel::readOnly).collect(Collectors.toList()));
+    for (int partitionNumber : getPartitionNumbers()) {
+      final List<OutputChannel> outputChannelsForPartition =
+          getChannelsForPartition(partitionNumber);
+
+      Preconditions.checkState(partitionNumber >= 0, "Expected partitionNumber >= 0, but got [%s]", partitionNumber);
+      Preconditions.checkState(
+          outputChannelsForPartition.size() == 1,
+          "Expected one channel for partition [%s], but got [%s]",
+          partitionNumber,
+          outputChannelsForPartition.size()
+      );
+    }
+    return this;
   }
 
   /**
@@ -87,6 +100,14 @@ public class OutputChannels
   public List<OutputChannel> getAllChannels()
   {
     return outputChannels;
+  }
+
+  /**
+   * Returns all channels, as readable channels.
+   */
+  public List<ReadableFrameChannel> getAllReadableChannels()
+  {
+    return outputChannels.stream().map(OutputChannel::getReadableChannel).collect(Collectors.toList());
   }
 
   /**
@@ -109,6 +130,24 @@ public class OutputChannels
    */
   public OutputChannels readOnly()
   {
-    return wrapReadOnly(outputChannels);
+    if (isReadOnly()) {
+      return this;
+    } else {
+      return new OutputChannels(outputChannels.stream().map(OutputChannel::readOnly).collect(Collectors.toList()));
+    }
+  }
+
+  /**
+   * Returns whether this instance is read-only (all channels have {@link OutputChannel#isReadOnly()}).
+   */
+  public boolean isReadOnly()
+  {
+    for (final OutputChannel channel : outputChannels) {
+      if (!channel.isReadOnly()) {
+        return false;
+      }
+    }
+
+    return true;
   }
 }

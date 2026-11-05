@@ -1,0 +1,80 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+package org.apache.druid.java.util.http.client.response;
+
+import io.netty.handler.codec.http.HttpContent;
+import io.netty.handler.codec.http.HttpResponse;
+
+public class StatusResponseHandler implements HttpResponseHandler<StatusResponseHolder, StatusResponseHolder>
+{
+
+  private static final StatusResponseHandler INSTANCE = new StatusResponseHandler();
+
+  private StatusResponseHandler()
+  {
+  }
+
+  public static StatusResponseHandler getInstance()
+  {
+    return INSTANCE;
+  }
+
+  @Override
+  public ClientResponse<StatusResponseHolder> handleResponse(HttpResponse response, TrafficCop trafficCop)
+  {
+    return ClientResponse.unfinished(
+        new StatusResponseHolder(response.status(), new StringBuilder())
+    );
+  }
+
+  @Override
+  public ClientResponse<StatusResponseHolder> handleChunk(
+      ClientResponse<StatusResponseHolder> response,
+      HttpContent chunk,
+      long chunkNum
+  )
+  {
+    final StatusResponseHolder holder = response.getObj();
+
+    if (holder == null) {
+      return ClientResponse.finished(null);
+    }
+
+    holder.addChunk(chunk.content());
+    return response;
+  }
+
+  @Override
+  public ClientResponse<StatusResponseHolder> done(ClientResponse<StatusResponseHolder> response)
+  {
+    final StatusResponseHolder holder = response.getObj();
+    if (holder != null) {
+      holder.done();
+    }
+    return ClientResponse.finished(holder);
+  }
+
+  @Override
+  public void exceptionCaught(ClientResponse<StatusResponseHolder> clientResponse, Throwable e)
+  {
+    // Its safe to Ignore as the ClientResponse returned in handleChunk were unfinished
+  }
+
+}

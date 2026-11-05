@@ -19,15 +19,16 @@
 import { T } from 'druid-query-toolkit';
 import React from 'react';
 
-import { Execution, WorkbenchQuery } from '../../../druid-models';
+import type { Execution } from '../../../druid-models';
+import { WorkbenchQuery } from '../../../druid-models';
 import { formatDuration, pluralIfNeeded } from '../../../utils';
-import { ExecutionDetailsTab } from '../execution-details-pane/execution-details-pane';
+import type { ExecutionDetailsTab } from '../execution-details-pane/execution-details-pane';
 
 import './ingest-success-pane.scss';
 
 export interface IngestSuccessPaneProps {
   execution: Execution;
-  onDetails(id: string, initTab?: ExecutionDetailsTab): void;
+  onDetails(execution: Execution, initTab?: ExecutionDetailsTab): void;
   onQueryTab?(newQuery: WorkbenchQuery, tabName?: string): void;
 }
 
@@ -38,28 +39,24 @@ export const IngestSuccessPane = React.memo(function IngestSuccessPane(
 
   const datasource = execution.getIngestDatasource();
   if (!datasource) return null;
-
-  const { stages } = execution;
-  const lastStage = stages?.getLastStage();
-
-  const rows =
-    stages && lastStage && lastStage.definition.processor.type === 'segmentGenerator'
-      ? stages.getTotalCounterForStage(lastStage, 'input0', 'rows') // Assume input0 since we know the segmentGenerator will only ever have one stage input
-      : -1;
-
   const table = T(datasource);
+  const rows = execution.getOutputNumTotalRows();
 
-  const warnings = stages?.getWarningCount() || 0;
+  const warnings = execution.stages?.getWarningCount() || 0;
 
-  const duration = execution.duration;
+  const { duration } = execution;
+  const segmentStatusDescription = execution.getSegmentStatusDescription();
+
   return (
     <div className="ingest-success-pane">
       <p>
-        {`${rows < 0 ? 'Data' : pluralIfNeeded(rows, 'row')} inserted into '${datasource}'.`}
+        {`${typeof rows === 'number' ? pluralIfNeeded(rows, 'row') : 'Data'} inserted into ${T(
+          datasource,
+        )}.`}
         {warnings > 0 && (
           <>
             {' '}
-            <span className="action" onClick={() => onDetails(execution.id, 'warnings')}>
+            <span className="action" onClick={() => onDetails(execution, 'warnings')}>
               {pluralIfNeeded(warnings, 'warning')}
             </span>{' '}
             recorded.
@@ -68,10 +65,12 @@ export const IngestSuccessPane = React.memo(function IngestSuccessPane(
       </p>
       <p>
         {duration ? `Insert query took ${formatDuration(duration)}. ` : `Insert query completed. `}
-        <span className="action" onClick={() => onDetails(execution.id)}>
+        {segmentStatusDescription ? segmentStatusDescription.label + ' ' : ''}
+        <span className="action" onClick={() => onDetails(execution)}>
           Show details
         </span>
       </p>
+
       {onQueryTab && (
         <p>
           Open new tab with:{' '}

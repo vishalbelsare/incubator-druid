@@ -16,8 +16,7 @@
  * limitations under the License.
  */
 
-import { shallow } from 'enzyme';
-import React from 'react';
+import { render } from '@testing-library/react';
 
 import { EXECUTION_INGEST_COMPLETE } from '../../../druid-models/mocks';
 
@@ -25,10 +24,10 @@ import { ExecutionStagesPane } from './execution-stages-pane';
 
 describe('ExecutionStagesPane', () => {
   it('matches snapshot', () => {
-    const comp = shallow(
-      <ExecutionStagesPane execution={EXECUTION_INGEST_COMPLETE} goToIngestion={() => {}} />,
+    const { container } = render(
+      <ExecutionStagesPane execution={EXECUTION_INGEST_COMPLETE} goToTask={() => {}} />,
     );
 
-    expect(comp).toMatchSnapshot();
+    expect(container.firstChild).toMatchSnapshot();
   });
 });

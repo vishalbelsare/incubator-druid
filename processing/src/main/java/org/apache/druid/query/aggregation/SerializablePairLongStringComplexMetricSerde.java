@@ -19,15 +19,22 @@
 
 package org.apache.druid.query.aggregation;
 
+import it.unimi.dsi.fastutil.Hash;
 import org.apache.druid.collections.SerializablePair;
 import org.apache.druid.data.input.InputRow;
+import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.segment.GenericColumnSerializer;
+import org.apache.druid.segment.IndexSpec;
 import org.apache.druid.segment.column.ColumnBuilder;
+import org.apache.druid.segment.column.ColumnType;
+import org.apache.druid.segment.column.ObjectStrategyComplexTypeStrategy;
+import org.apache.druid.segment.column.TypeStrategy;
 import org.apache.druid.segment.data.GenericIndexed;
 import org.apache.druid.segment.data.ObjectStrategy;
 import org.apache.druid.segment.serde.ComplexColumnPartSupplier;
 import org.apache.druid.segment.serde.ComplexMetricExtractor;
 import org.apache.druid.segment.serde.ComplexMetricSerde;
+import org.apache.druid.segment.serde.LargeColumnSupportedComplexColumnSerializer;
 import org.apache.druid.segment.serde.cell.NativeClearedByteBufferProvider;
 import org.apache.druid.segment.writeout.SegmentWriteOutMedium;
 
@@ -49,6 +56,20 @@ import java.util.Comparator;
  */
 public class SerializablePairLongStringComplexMetricSerde extends ComplexMetricSerde
 {
+  /**
+   * This is a configuration parameter to allow for turning on compression.  It is a hack, it would be significantly
+   * better if this could be delivered via properties.  The number one reason this is a hack is because it reads
+   * the System.getProperty which doesn't actually have runtime.properties files put into it, so this setting
+   * could be set in runtime.properties and this code wouldn't see it, because that's not how it is wired up.
+   *
+   * The intent of this parameter is so that Druid 25 can be released using the legacy serialization format. This
+   * will allow us to get code released that can *read* both the legacy and the new format.  Then, in Druid 26,
+   * we can completely eliminate this boolean and start to only *write* the new format, in which case this
+   * hack of a configuration property disappears.
+   */
+  private static final boolean COMPRESSION_ENABLED =
+      Boolean.parseBoolean(System.getProperty("druid.columns.pairLongString.compressed", "false"));
+
   public static final int EXPECTED_VERSION = 3;
   public static final String TYPE_NAME = "serializablePairLongString";
   // Null SerializablePairLongString values are put first
@@ -60,6 +81,17 @@ public class SerializablePairLongStringComplexMetricSerde extends ComplexMetricS
 
   private static final SerializablePairLongStringSimpleStagedSerde SERDE =
       new SerializablePairLongStringSimpleStagedSerde();
+  private final boolean compressionEnabled;
+
+  public SerializablePairLongStringComplexMetricSerde()
+  {
+    this(COMPRESSION_ENABLED);
+  }
+
+  public SerializablePairLongStringComplexMetricSerde(boolean compressionEnabled)
+  {
+    this.compressionEnabled = compressionEnabled;
+  }
 
   @Override
   public String getTypeName()
@@ -70,7 +102,7 @@ public class SerializablePairLongStringComplexMetricSerde extends ComplexMetricS
   @Override
   public ComplexMetricExtractor<?> getExtractor()
   {
-    return new ComplexMetricExtractor<Object>()
+    return new ComplexMetricExtractor<>()
     {
       @Override
       public Class<SerializablePairLongString> extractedClass()
@@ -92,7 +124,7 @@ public class SerializablePairLongStringComplexMetricSerde extends ComplexMetricS
     byte version = buffer.get(buffer.position());
 
     if (version == 0 || version == 1 || version == 2) {
-      GenericIndexed<?> column = GenericIndexed.read(buffer, getObjectStrategy(), columnBuilder.getFileMapper());
+      GenericIndexed<?> column = GenericIndexed.read(buffer, LEGACY_STRATEGY, columnBuilder.getFileMapper());
       columnBuilder.setComplexColumnSupplier(new ComplexColumnPartSupplier(getTypeName(), column));
     } else {
       SerializablePairLongStringComplexColumn.Builder builder =
@@ -103,9 +135,9 @@ public class SerializablePairLongStringComplexMetricSerde extends ComplexMetricS
   }
 
   @Override
-  public ObjectStrategy<?> getObjectStrategy()
+  public ObjectStrategy<SerializablePairLongString> getObjectStrategy()
   {
-    return new ObjectStrategy<SerializablePairLongString>()
+    return new ObjectStrategy<>()
     {
       @Override
       public int compare(@Nullable SerializablePairLongString o1, @Nullable SerializablePairLongString o2)
@@ -139,11 +171,108 @@ public class SerializablePairLongStringComplexMetricSerde extends ComplexMetricS
   }
 
   @Override
-  public GenericColumnSerializer<?> getSerializer(SegmentWriteOutMedium segmentWriteOutMedium, String column)
+  public TypeStrategy<SerializablePairLongString> getTypeStrategy()
   {
-    return new SerializablePairLongStringColumnSerializer(
-        segmentWriteOutMedium,
-        NativeClearedByteBufferProvider.INSTANCE
+    return new ObjectStrategyComplexTypeStrategy<>(
+        getObjectStrategy(),
+        ColumnType.ofComplex(getTypeName()),
+        new Hash.Strategy<>()
+        {
+          @Override
+          public int hashCode(SerializablePairLongString o)
+          {
+            return o.hashCode();
+          }
+
+          @Override
+          public boolean equals(SerializablePairLongString a, SerializablePairLongString b)
+          {
+            return a.equals(b);
+          }
+        }
     );
   }
+
+  @Override
+  public GenericColumnSerializer<?> getSerializer(
+      SegmentWriteOutMedium segmentWriteOutMedium,
+      String column,
+      IndexSpec indexSpec
+  )
+  {
+    if (compressionEnabled) {
+      return new SerializablePairLongStringColumnSerializer(
+          segmentWriteOutMedium,
+          NativeClearedByteBufferProvider.INSTANCE
+      );
+    } else {
+      return LargeColumnSupportedComplexColumnSerializer.create(
+          segmentWriteOutMedium,
+          column,
+          LEGACY_STRATEGY
+      );
+    }
+  }
+
+  private static final ObjectStrategy<SerializablePairLongString> LEGACY_STRATEGY =
+      new ObjectStrategy<>()
+      {
+        @Override
+        public int compare(@Nullable SerializablePairLongString o1, @Nullable SerializablePairLongString o2)
+        {
+          return COMPARATOR.compare(o1, o2);
+        }
+
+        @Override
+        public Class<? extends SerializablePairLongString> getClazz()
+        {
+          return SerializablePairLongString.class;
+        }
+
+        @Override
+        public SerializablePairLongString fromByteBuffer(ByteBuffer buffer, int numBytes)
+        {
+          final ByteBuffer readOnlyBuffer = buffer.asReadOnlyBuffer();
+
+          long lhs = readOnlyBuffer.getLong();
+          int stringSize = readOnlyBuffer.getInt();
+
+          String lastString = null;
+          if (stringSize > 0) {
+            byte[] stringBytes = new byte[stringSize];
+            readOnlyBuffer.get(stringBytes, 0, stringSize);
+            lastString = StringUtils.fromUtf8(stringBytes);
+          }
+
+          return new SerializablePairLongString(lhs, lastString);
+        }
+
+        @Override
+        public byte[] toBytes(SerializablePairLongString val)
+        {
+          String rhsString = val.rhs;
+          ByteBuffer bbuf;
+
+          if (rhsString != null) {
+            byte[] rhsBytes = StringUtils.toUtf8(rhsString);
+            bbuf = ByteBuffer.allocate(Long.BYTES + Integer.BYTES + rhsBytes.length);
+            bbuf.putLong(val.lhs);
+            bbuf.putInt(Long.BYTES, rhsBytes.length);
+            bbuf.position(Long.BYTES + Integer.BYTES);
+            bbuf.put(rhsBytes);
+          } else {
+            bbuf = ByteBuffer.allocate(Long.BYTES + Integer.BYTES);
+            bbuf.putLong(val.lhs);
+            bbuf.putInt(Long.BYTES, 0);
+          }
+
+          return bbuf.array();
+        }
+
+        @Override
+        public boolean readRetainsBufferReference()
+        {
+          return false;
+        }
+      };
 }

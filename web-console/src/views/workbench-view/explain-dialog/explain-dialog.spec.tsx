@@ -16,10 +16,10 @@
  * limitations under the License.
  */
 
-import { shallow } from 'enzyme';
-import React from 'react';
+import { render } from '@testing-library/react';
 
-import { QueryExplanation, QueryState } from '../../../utils';
+import type { QueryExplanation } from '../../../utils';
+import { QueryState } from '../../../utils';
 
 import { ExplainDialog } from './explain-dialog';
 
@@ -27,6 +27,7 @@ let explainState: QueryState<QueryExplanation[] | string> = QueryState.INIT;
 
 jest.mock('../../../hooks', () => {
   return {
+    ...jest.requireActual('../../../hooks'),
     useQueryManager: () => [explainState],
   };
 });
@@ -44,19 +45,22 @@ describe('ExplainDialog', () => {
   }
 
   it('matches snapshot on init', () => {
-    expect(shallow(makeExplainDialog())).toMatchSnapshot();
+    render(makeExplainDialog());
+    expect(document.body.lastChild).toMatchSnapshot();
   });
 
   it('matches snapshot on loading', () => {
     explainState = QueryState.LOADING;
 
-    expect(shallow(makeExplainDialog())).toMatchSnapshot();
+    render(makeExplainDialog());
+    expect(document.body.lastChild).toMatchSnapshot();
   });
 
   it('matches snapshot on error', () => {
     explainState = new QueryState({ error: new Error('test error') });
 
-    expect(shallow(makeExplainDialog())).toMatchSnapshot();
+    render(makeExplainDialog());
+    expect(document.body.lastChild).toMatchSnapshot();
   });
 
   it('matches snapshot on some data (one query)', () => {
@@ -159,11 +163,22 @@ describe('ExplainDialog', () => {
               type: 'LONG',
             },
           ],
+          columnMappings: [
+            {
+              queryColumn: 'd0',
+              outputColumn: 'channel',
+            },
+            {
+              queryColumn: 'a0',
+              outputColumn: 'Count',
+            },
+          ],
         },
       ],
     });
 
-    expect(shallow(makeExplainDialog())).toMatchSnapshot();
+    render(makeExplainDialog());
+    expect(document.body.lastChild).toMatchSnapshot();
   });
 
   it('matches snapshot on some data (many queries)', () => {
@@ -186,7 +201,6 @@ describe('ExplainDialog', () => {
             limit: 101,
             filter: null,
             columns: ['channel'],
-            legacy: false,
             context: {},
             descending: false,
             granularity: {
@@ -197,6 +211,12 @@ describe('ExplainDialog', () => {
             {
               name: 'channel',
               type: 'STRING',
+            },
+          ],
+          columnMappings: [
+            {
+              queryColumn: 'channel',
+              outputColumn: 'channel',
             },
           ],
         },
@@ -222,7 +242,6 @@ describe('ExplainDialog', () => {
               extractionFn: null,
             },
             columns: ['channel'],
-            legacy: false,
             context: {},
             descending: false,
             granularity: {
@@ -235,10 +254,17 @@ describe('ExplainDialog', () => {
               type: 'STRING',
             },
           ],
+          columnMappings: [
+            {
+              queryColumn: 'channel',
+              outputColumn: 'channel',
+            },
+          ],
         },
       ],
     });
 
-    expect(shallow(makeExplainDialog())).toMatchSnapshot();
+    render(makeExplainDialog());
+    expect(document.body.lastChild).toMatchSnapshot();
   });
 });

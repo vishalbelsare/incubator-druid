@@ -19,267 +19,255 @@
 
 package org.apache.druid.sql.http;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
-import com.google.common.io.CountingOutputStream;
+import com.google.common.collect.ImmutableMap;
 import com.google.inject.Inject;
-import org.apache.calcite.plan.RelOptPlanner;
-import org.apache.druid.common.exception.SanitizableException;
-import org.apache.druid.guice.annotations.NativeQuery;
-import org.apache.druid.guice.annotations.Self;
+import com.sun.jersey.api.core.HttpContext;
+import org.apache.druid.common.exception.ErrorResponseTransformStrategy;
+import org.apache.druid.error.DruidException;
 import org.apache.druid.java.util.common.StringUtils;
-import org.apache.druid.java.util.common.guava.Yielder;
-import org.apache.druid.java.util.common.guava.Yielders;
 import org.apache.druid.java.util.common.logger.Logger;
-import org.apache.druid.query.BadQueryException;
-import org.apache.druid.query.QueryCapacityExceededException;
-import org.apache.druid.query.QueryInterruptedException;
-import org.apache.druid.query.QueryTimeoutException;
-import org.apache.druid.query.QueryUnsupportedException;
-import org.apache.druid.server.DruidNode;
+import org.apache.druid.query.QueryConfigProvider;
+import org.apache.druid.query.QueryContext;
+import org.apache.druid.query.context.QueryContextParameters;
 import org.apache.druid.server.QueryResource;
-import org.apache.druid.server.QueryResponse;
-import org.apache.druid.server.ResponseContextConfig;
+import org.apache.druid.server.QueryResultPusher;
 import org.apache.druid.server.initialization.ServerConfig;
-import org.apache.druid.server.security.Access;
+import org.apache.druid.server.security.Action;
+import org.apache.druid.server.security.AuthenticationResult;
+import org.apache.druid.server.security.AuthorizationResult;
 import org.apache.druid.server.security.AuthorizationUtils;
 import org.apache.druid.server.security.AuthorizerMapper;
-import org.apache.druid.server.security.ForbiddenException;
+import org.apache.druid.server.security.Resource;
 import org.apache.druid.server.security.ResourceAction;
-import org.apache.druid.sql.DirectStatement.ResultSet;
 import org.apache.druid.sql.HttpStatement;
-import org.apache.druid.sql.SqlExecutionReporter;
 import org.apache.druid.sql.SqlLifecycleManager;
 import org.apache.druid.sql.SqlLifecycleManager.Cancelable;
-import org.apache.druid.sql.SqlPlanningException;
-import org.apache.druid.sql.SqlRowTransformer;
-import org.apache.druid.sql.SqlStatementFactory;
-import org.apache.druid.utils.CloseableUtils;
+import org.apache.druid.sql.SqlQueryPlus;
+import org.apache.druid.sql.calcite.run.SqlEngine;
 
 import javax.annotation.Nullable;
 import javax.servlet.http.HttpServletRequest;
 import javax.ws.rs.Consumes;
 import javax.ws.rs.DELETE;
+import javax.ws.rs.GET;
 import javax.ws.rs.POST;
 import javax.ws.rs.Path;
 import javax.ws.rs.PathParam;
 import javax.ws.rs.Produces;
-import javax.ws.rs.WebApplicationException;
+import javax.ws.rs.QueryParam;
 import javax.ws.rs.core.Context;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 import javax.ws.rs.core.Response.Status;
-import javax.ws.rs.core.StreamingOutput;
-import java.io.IOException;
-import java.io.OutputStream;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
-@Path("/druid/v2/sql/")
+@Path(SqlResource.PATH)
 public class SqlResource
 {
+  public static final String PATH = "/druid/v2/sql/";
   public static final String SQL_QUERY_ID_RESPONSE_HEADER = "X-Druid-SQL-Query-Id";
   public static final String SQL_HEADER_RESPONSE_HEADER = "X-Druid-SQL-Header-Included";
   public static final String SQL_HEADER_VALUE = "yes";
+
   private static final Logger log = new Logger(SqlResource.class);
+  public static final SqlResourceQueryMetricCounter QUERY_METRIC_COUNTER = new SqlResourceQueryMetricCounter();
 
-  private final ObjectMapper jsonMapper;
   private final AuthorizerMapper authorizerMapper;
-  private final SqlStatementFactory sqlStatementFactory;
+  private final SqlResourceQueryResultPusherFactory resultPusherFactory;
   private final SqlLifecycleManager sqlLifecycleManager;
+  private final SqlEngineRegistry sqlEngineRegistry;
+  private final QueryConfigProvider queryConfigProvider;
   private final ServerConfig serverConfig;
-  private final ResponseContextConfig responseContextConfig;
-  private final DruidNode selfNode;
 
+  @VisibleForTesting
   @Inject
-  SqlResource(
-      final ObjectMapper jsonMapper,
+  public SqlResource(
       final AuthorizerMapper authorizerMapper,
-      final @NativeQuery SqlStatementFactory sqlStatementFactory,
       final SqlLifecycleManager sqlLifecycleManager,
-      final ServerConfig serverConfig,
-      ResponseContextConfig responseContextConfig,
-      @Self DruidNode selfNode
+      final SqlEngineRegistry sqlEngineRegistry,
+      final SqlResourceQueryResultPusherFactory resultPusherFactory,
+      final QueryConfigProvider queryConfigProvider,
+      final ServerConfig serverConfig
   )
   {
-    this.jsonMapper = Preconditions.checkNotNull(jsonMapper, "jsonMapper");
+    this.resultPusherFactory = resultPusherFactory;
+    this.sqlEngineRegistry = Preconditions.checkNotNull(sqlEngineRegistry, "sqlEngineRegistry");
     this.authorizerMapper = Preconditions.checkNotNull(authorizerMapper, "authorizerMapper");
-    this.sqlStatementFactory = Preconditions.checkNotNull(sqlStatementFactory, "sqlStatementFactory");
     this.sqlLifecycleManager = Preconditions.checkNotNull(sqlLifecycleManager, "sqlLifecycleManager");
-    this.serverConfig = Preconditions.checkNotNull(serverConfig, "serverConfig");
-    this.responseContextConfig = responseContextConfig;
-    this.selfNode = selfNode;
+    this.queryConfigProvider = Preconditions.checkNotNull(queryConfigProvider, "queryConfigProvider");
+    this.serverConfig = serverConfig;
+  }
 
+  @GET
+  @Path("/engines")
+  @Produces(MediaType.APPLICATION_JSON)
+  public Response getSupportedEngines(@Context final HttpServletRequest request)
+  {
+    AuthorizationUtils.setRequestAuthorizationAttributeIfNeeded(request);
+    Set<EngineInfo> engines = sqlEngineRegistry.getSupportedEngines()
+                                               .stream()
+                                               .map(EngineInfo::new)
+                                               .collect(Collectors.toSet());
+    return Response.ok(new SupportedEnginesResponse(engines)).build();
   }
 
   @POST
   @Produces(MediaType.APPLICATION_JSON)
-  @Consumes(MediaType.APPLICATION_JSON)
+  @Consumes({
+      MediaType.APPLICATION_JSON,
+      MediaType.TEXT_PLAIN,
+      MediaType.APPLICATION_FORM_URLENCODED,
+  })
+  @Nullable
+  public Response doPost(
+      @Context final HttpServletRequest req,
+      @Context final HttpContext httpContext
+  )
+  {
+    return doPost(SqlQuery.from(httpContext), req);
+  }
+
+  /**
+   * API to list all running queries, for all engines that supports such listings.
+   *
+   * @param selfOnly        if present, return queries running on this server only. If absent, return queries
+   *                        running on all servers.
+   * @param includeComplete if present, include completed queries in the response. The number of completed queries
+   *                        returned is determined by engine-specific retention settings.
+   * @param request         http request.
+   */
+  @GET
+  @Path("/queries")
+  @Produces(MediaType.APPLICATION_JSON)
+  public Response doGetRunningQueries(
+      @QueryParam("selfOnly") final String selfOnly,
+      @QueryParam("includeComplete") final String includeComplete,
+      @Context final HttpServletRequest request
+  )
+  {
+    final AuthenticationResult authenticationResult = AuthorizationUtils.authenticationResultFromRequest(request);
+    final AuthorizationResult stateReadAccess = AuthorizationUtils.authorizeAllResourceActions(
+        authenticationResult,
+        Collections.singletonList(new ResourceAction(Resource.STATE_RESOURCE, Action.READ)),
+        authorizerMapper
+    );
+
+    final Collection<SqlEngine> engines = sqlEngineRegistry.getAllEngines();
+    final List<QueryInfo> queries = new ArrayList<>();
+
+    // Get running queries from all engines that support it.
+    for (SqlEngine sqlEngine : engines) {
+      queries.addAll(
+          sqlEngine.getQueries(
+              selfOnly != null,
+              includeComplete != null,
+              authenticationResult,
+              stateReadAccess
+          ).getQueries()
+      );
+    }
+
+    AuthorizationUtils.setRequestAuthorizationAttributeIfNeeded(request);
+    return Response.ok().entity(new GetQueriesResponse(queries)).build();
+  }
+
+  /**
+   * API to get query reports, for all engines that support such reports.
+   *
+   * @param sqlQueryId SQL query ID
+   * @param selfOnly   if true, check reports from this server only. If false, check reports on all servers.
+   * @param request    http request.
+   */
+  @GET
+  @Path("/queries/{sqlQueryId}/reports")
+  @Produces(MediaType.APPLICATION_JSON)
+  public Response doGetQueryReport(
+      @PathParam("sqlQueryId") final String sqlQueryId,
+      @QueryParam("selfOnly") final String selfOnly,
+      @Context final HttpServletRequest request
+  )
+  {
+    final AuthenticationResult authenticationResult = AuthorizationUtils.authenticationResultFromRequest(request);
+    final AuthorizationResult stateReadAccess = AuthorizationUtils.authorizeAllResourceActions(
+        authenticationResult,
+        Collections.singletonList(new ResourceAction(Resource.STATE_RESOURCE, Action.READ)),
+        authorizerMapper
+    );
+
+    final Collection<SqlEngine> engines = sqlEngineRegistry.getAllEngines();
+
+    // Get task report from the first engine that recognizes the SQL query ID.
+    GetQueryReportResponse retVal = null;
+    for (SqlEngine sqlEngine : engines) {
+      retVal = sqlEngine.getQueryReport(
+          sqlQueryId,
+          selfOnly != null,
+          authenticationResult,
+          stateReadAccess
+      );
+
+      if (retVal != null) {
+        break;
+      }
+    }
+
+    AuthorizationUtils.setRequestAuthorizationAttributeIfNeeded(request);
+    if (retVal == null) {
+      return Response.status(Status.NOT_FOUND).entity(new GetQueryReportResponse(null, null)).build();
+    } else {
+      return Response.ok().entity(retVal).build();
+    }
+  }
+
+  /**
+   * This method is defined as public so that tests can access it
+   */
   public Response doPost(
       final SqlQuery sqlQuery,
-      @Context final HttpServletRequest req
-  ) throws IOException
+      final HttpServletRequest req
+  )
   {
-    final HttpStatement stmt = sqlStatementFactory.httpStatement(sqlQuery, req);
-    final String sqlQueryId = stmt.sqlQueryId();
-    final String currThreadName = Thread.currentThread().getName();
+    final HttpStatement stmt;
+    final QueryContext queryContext;
 
     try {
-      Thread.currentThread().setName(StringUtils.format("sql[%s]", sqlQueryId));
-      ResultSet resultSet = stmt.plan();
-      final QueryResponse<Object[]> response = resultSet.run();
-      final SqlRowTransformer rowTransformer = resultSet.createRowTransformer();
-      final Yielder<Object[]> finalYielder = Yielders.each(response.getResults());
+      final SqlQueryPlus sqlQueryPlus = makeSqlQueryPlus(sqlQuery, req, queryConfigProvider.getContext());
 
-      final Response.ResponseBuilder responseBuilder = Response
-          .ok(
-              new StreamingOutput()
-              {
-                @Override
-                public void write(OutputStream output) throws IOException, WebApplicationException
-                {
-                  Exception e = null;
-                  CountingOutputStream os = new CountingOutputStream(output);
-                  Yielder<Object[]> yielder = finalYielder;
-
-                  try (final ResultFormat.Writer writer = sqlQuery.getResultFormat()
-                                                                  .createFormatter(os, jsonMapper)) {
-                    writer.writeResponseStart();
-
-                    if (sqlQuery.includeHeader()) {
-                      writer.writeHeader(
-                          rowTransformer.getRowType(),
-                          sqlQuery.includeTypesHeader(),
-                          sqlQuery.includeSqlTypesHeader()
-                      );
-                    }
-
-                    while (!yielder.isDone()) {
-                      final Object[] row = yielder.get();
-                      writer.writeRowStart();
-                      for (int i = 0; i < rowTransformer.getFieldList().size(); i++) {
-                        final Object value = rowTransformer.transform(row, i);
-                        writer.writeRowField(rowTransformer.getFieldList().get(i), value);
-                      }
-                      writer.writeRowEnd();
-                      yielder = yielder.next(null);
-                    }
-
-                    writer.writeResponseEnd();
-                  }
-                  catch (Exception ex) {
-                    e = ex;
-                    log.error(ex, "Unable to send SQL response [%s]", sqlQueryId);
-                    throw new RuntimeException(ex);
-                  }
-                  finally {
-                    final Exception finalE = e;
-
-                    CloseableUtils.closeAll(
-                        yielder,
-                        () -> endLifecycle(stmt, finalE, os.getCount())
-                    );
-                  }
-                }
-              }
-          )
-          .header(SQL_QUERY_ID_RESPONSE_HEADER, sqlQueryId);
-
-      if (sqlQuery.includeHeader()) {
-        responseBuilder.header(SQL_HEADER_RESPONSE_HEADER, SQL_HEADER_VALUE);
-      }
-
-      QueryResource.attachResponseContextToHttpResponse(
-          sqlQueryId,
-          response.getResponseContext(),
-          responseBuilder,
-          jsonMapper,
-          responseContextConfig,
-          selfNode
+      // Redefine queryContext to include SET parameters and default context.
+      queryContext = new QueryContext(sqlQueryPlus.context());
+      final String engineName = queryContext.getEngine();
+      final SqlEngine engine = sqlEngineRegistry.getEngine(engineName);
+      stmt = engine.getSqlStatementFactory().httpStatement(sqlQueryPlus, req);
+    }
+    catch (Exception e) {
+      // Can't use the queryContext with SETs since it might not have been created yet. Use the original one.
+      return handleExceptionBeforeStatementCreated(
+          e,
+          sqlQuery.queryContext(),
+          serverConfig.getErrorResponseTransformStrategy()
       );
+    }
 
-      return responseBuilder.build();
-    }
-    catch (QueryCapacityExceededException cap) {
-      endLifecycle(stmt, cap, -1);
-      return buildNonOkResponse(QueryCapacityExceededException.STATUS_CODE, cap, sqlQueryId);
-    }
-    catch (QueryUnsupportedException unsupported) {
-      endLifecycle(stmt, unsupported, -1);
-      return buildNonOkResponse(QueryUnsupportedException.STATUS_CODE, unsupported, sqlQueryId);
-    }
-    catch (QueryTimeoutException timeout) {
-      endLifecycle(stmt, timeout, -1);
-      return buildNonOkResponse(QueryTimeoutException.STATUS_CODE, timeout, sqlQueryId);
-    }
-    catch (BadQueryException e) {
-      endLifecycle(stmt, e, -1);
-      return buildNonOkResponse(BadQueryException.STATUS_CODE, e, sqlQueryId);
-    }
-    catch (ForbiddenException e) {
-      endLifecycleWithoutEmittingMetrics(stmt);
-      throw (ForbiddenException) serverConfig.getErrorResponseTransformStrategy()
-                                             .transformIfNeeded(e); // let ForbiddenExceptionMapper handle this
-    }
-    catch (RelOptPlanner.CannotPlanException e) {
-      endLifecycle(stmt, e, -1);
-      SqlPlanningException spe = new SqlPlanningException(SqlPlanningException.PlanningError.UNSUPPORTED_SQL_ERROR,
-          e.getMessage());
-      return buildNonOkResponse(BadQueryException.STATUS_CODE, spe, sqlQueryId);
-    }
-    // Calcite throws a java.lang.AssertionError which is type error not exception.
-    // Using throwable will catch all.
-    catch (Throwable e) {
-      log.warn(e, "Failed to handle query: %s", sqlQuery);
-      endLifecycle(stmt, e, -1);
+    final String currThreadName = Thread.currentThread().getName();
+    try {
+      Thread.currentThread().setName(StringUtils.format("sql[%s]", stmt.sqlQueryId()));
 
-      return buildNonOkResponse(
-          Status.INTERNAL_SERVER_ERROR.getStatusCode(),
-          QueryInterruptedException.wrapIfNeeded(e),
-          sqlQueryId
-      );
+      QueryResultPusher pusher = resultPusherFactory.factorize(req, stmt, sqlQuery);
+      return pusher.push();
     }
     finally {
       Thread.currentThread().setName(currThreadName);
     }
-  }
-
-  private void endLifecycleWithoutEmittingMetrics(
-      HttpStatement stmt
-  )
-  {
-    stmt.closeQuietly();
-  }
-
-  private void endLifecycle(
-      HttpStatement stmt,
-      @Nullable final Throwable e,
-      final long bytesWritten
-  )
-  {
-    SqlExecutionReporter reporter = stmt.reporter();
-    if (e == null) {
-      reporter.succeeded(bytesWritten);
-    } else {
-      reporter.failed(e);
-    }
-    stmt.close();
-  }
-
-  private Response buildNonOkResponse(int status, SanitizableException e, String sqlQueryId)
-      throws JsonProcessingException
-  {
-    return Response.status(status)
-                   .type(MediaType.APPLICATION_JSON_TYPE)
-                   .entity(
-                       jsonMapper.writeValueAsBytes(
-                           serverConfig.getErrorResponseTransformStrategy().transformIfNeeded(e)
-                       )
-                   )
-                   .header(SQL_QUERY_ID_RESPONSE_HEADER, sqlQueryId)
-                   .build();
   }
 
   @DELETE
@@ -297,21 +285,9 @@ public class SqlResource
       return Response.status(Status.NOT_FOUND).build();
     }
 
-    // Considers only datasource and table resources; not context
-    // key resources when checking permissions. This means that a user's
-    // permission to cancel a query depends on the datasource, not the
-    // context variables used in the query.
-    Set<ResourceAction> resources = lifecycles
-        .stream()
-        .flatMap(lifecycle -> lifecycle.resources().stream())
-        .collect(Collectors.toSet());
-    Access access = AuthorizationUtils.authorizeAllResourceActions(
-        req,
-        resources,
-        authorizerMapper
-    );
+    final AuthorizationResult authResult = authorizeCancellation(req, lifecycles);
 
-    if (access.isAllowed()) {
+    if (authResult.allowAccessWithNoRestriction()) {
       // should remove only the lifecycles in the snapshot.
       sqlLifecycleManager.removeAll(sqlQueryId, lifecycles);
       lifecycles.forEach(Cancelable::cancel);
@@ -319,5 +295,112 @@ public class SqlResource
     } else {
       return Response.status(Status.FORBIDDEN).build();
     }
+  }
+
+  /**
+   * The SqlResource only generates metrics and doesn't keep track of aggregate counts of successful/failed/interrupted
+   * queries, so this implementation is effectively just a noop.
+   */
+  private static class SqlResourceQueryMetricCounter implements QueryResource.QueryMetricCounter
+  {
+    @Override
+    public void incrementSuccess()
+    {
+    }
+
+    @Override
+    public void incrementFailed()
+    {
+    }
+
+    @Override
+    public void incrementInterrupted()
+    {
+    }
+
+    @Override
+    public void incrementTimedOut()
+    {
+    }
+  }
+
+  /**
+   * Authorize a query cancellation operation.
+   * <p>
+   * Considers only datasource and table resources; not context key resources when checking permissions. This means
+   * that a user's permission to cancel a query depends on the datasource, not the context variables used in the query.
+   */
+  public AuthorizationResult authorizeCancellation(final HttpServletRequest req, final List<Cancelable> cancelables)
+  {
+    Set<ResourceAction> resources = cancelables
+        .stream()
+        .flatMap(lifecycle -> lifecycle.resources().stream())
+        .collect(Collectors.toSet());
+    return AuthorizationUtils.authorizeAllResourceActions(
+        req,
+        resources,
+        authorizerMapper
+    );
+  }
+
+  /**
+   * Create a {@link SqlQueryPlus}, which involves parsing the query from {@link SqlQuery#getQuery()} and
+   * extracing any SET parameters into the query context.
+   */
+  public static SqlQueryPlus makeSqlQueryPlus(
+      final SqlQuery sqlQuery,
+      final HttpServletRequest req,
+      final Map<String, Object> defaultQueryConfig
+  )
+  {
+    return SqlQueryPlus.builder()
+                       .sql(sqlQuery.getQuery())
+                       .systemDefaultContext(defaultQueryConfig)
+                       .queryContext(sqlQuery.getContext())
+                       .parameters(sqlQuery.getParameters())
+                       .auth(AuthorizationUtils.authenticationResultFromRequest(req))
+                       .build();
+  }
+
+  /**
+   * Generates a response for a {@link DruidException} that occurs prior to the {@link HttpStatement} being created.
+   */
+  public static Response handleExceptionBeforeStatementCreated(
+      final Exception e,
+      final QueryContext queryContext,
+      final ErrorResponseTransformStrategy strategy
+  )
+  {
+    final String sqlQueryId = queryContext.get(QueryContextParameters.SQL_QUERY_ID);
+    final String errorId = sqlQueryId == null ? UUID.randomUUID().toString() : sqlQueryId;
+
+    final DruidException druidException;
+    final Map<String, String> headers;
+    if (e instanceof DruidException) {
+      druidException = (DruidException) e;
+      headers = sqlQueryId != null
+                ? ImmutableMap.<String, String>builder()
+                              .put(QueryResource.QUERY_ID_RESPONSE_HEADER, sqlQueryId)
+                              .put(SQL_QUERY_ID_RESPONSE_HEADER, sqlQueryId)
+                              .build()
+                : Collections.emptyMap();
+    } else {
+      druidException = DruidException.forPersona(DruidException.Persona.OPERATOR)
+                                     .ofCategory(DruidException.Category.RUNTIME_FAILURE)
+                                     .build(e, "Cannot handle query");
+      headers = Collections.emptyMap();
+    }
+
+    final Optional<DruidException> transformed = strategy.maybeTransform(druidException, Optional.of(errorId));
+    if (transformed.isPresent()) {
+      // Nothing else logs this failure, and the client is only given the error id from here on.
+      log.error(e, StringUtils.format("External Error ID: [%s]", errorId));
+    }
+
+    return QueryResultPusher.handleDruidExceptionBeforeResponseStarted(
+        transformed.orElse(druidException),
+        MediaType.APPLICATION_JSON_TYPE,
+        headers
+    );
   }
 }

@@ -20,12 +20,14 @@
 package org.apache.druid.indexing.kinesis;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.base.Preconditions;
 import org.apache.druid.data.input.InputFormat;
 import org.apache.druid.indexing.seekablestream.SeekableStreamEndSequenceNumbers;
 import org.apache.druid.indexing.seekablestream.SeekableStreamIndexTaskIOConfig;
 import org.apache.druid.indexing.seekablestream.SeekableStreamStartSequenceNumbers;
+import org.apache.druid.indexing.seekablestream.supervisor.BoundedStreamConfig;
 import org.joda.time.DateTime;
 
 import javax.annotation.Nullable;
@@ -33,16 +35,25 @@ import java.util.Set;
 
 public class KinesisIndexTaskIOConfig extends SeekableStreamIndexTaskIOConfig<String, String>
 {
-  public static final int DEFAULT_RECORDS_PER_FETCH = 4000;
   public static final int DEFAULT_FETCH_DELAY_MILLIS = 0;
 
+  /**
+   * Together with {@link KinesisIndexTaskTuningConfig#MAX_RECORD_BUFFER_MEMORY}, don't take up more than 200MB
+   * per task.
+   */
+  public static final int MAX_RECORD_FETCH_MEMORY = 100_000_000;
+
+  /**
+   * Together with {@link KinesisIndexTaskTuningConfig#RECORD_BUFFER_MEMORY_MAX_HEAP_FRACTION}, don't take up more
+   * than 15% of the heap.
+   */
+  public static final double RECORD_FETCH_MEMORY_MAX_HEAP_FRACTION = 0.05;
+
   private final String endpoint;
-  private final Integer recordsPerFetch;
-  private final Integer fetchDelayMillis;
+  private final int fetchDelayMillis;
 
   private final String awsAssumedRoleArn;
   private final String awsExternalId;
-  private final boolean deaggregate;
 
   @JsonCreator
   public KinesisIndexTaskIOConfig(
@@ -66,11 +77,11 @@ public class KinesisIndexTaskIOConfig extends SeekableStreamIndexTaskIOConfig<St
       @JsonProperty("maximumMessageTime") DateTime maximumMessageTime,
       @JsonProperty("inputFormat") @Nullable InputFormat inputFormat,
       @JsonProperty("endpoint") String endpoint,
-      @JsonProperty("recordsPerFetch") Integer recordsPerFetch,
       @JsonProperty("fetchDelayMillis") Integer fetchDelayMillis,
       @JsonProperty("awsAssumedRoleArn") String awsAssumedRoleArn,
       @JsonProperty("awsExternalId") String awsExternalId,
-      @JsonProperty("deaggregate") boolean deaggregate
+      @JsonProperty("refreshRejectionPeriodsInMinutes") Long refreshRejectionPeriodsInMinutes,
+      @JsonProperty("boundedStreamConfig") @Nullable BoundedStreamConfig boundedStreamConfig
   )
   {
     super(
@@ -81,7 +92,9 @@ public class KinesisIndexTaskIOConfig extends SeekableStreamIndexTaskIOConfig<St
         useTransaction,
         minimumMessageTime,
         maximumMessageTime,
-        inputFormat
+        inputFormat,
+        refreshRejectionPeriodsInMinutes,
+        boundedStreamConfig
     );
     Preconditions.checkArgument(
         getEndSequenceNumbers().getPartitionSequenceNumberMap()
@@ -92,11 +105,9 @@ public class KinesisIndexTaskIOConfig extends SeekableStreamIndexTaskIOConfig<St
     );
 
     this.endpoint = Preconditions.checkNotNull(endpoint, "endpoint");
-    this.recordsPerFetch = recordsPerFetch != null ? recordsPerFetch : DEFAULT_RECORDS_PER_FETCH;
     this.fetchDelayMillis = fetchDelayMillis != null ? fetchDelayMillis : DEFAULT_FETCH_DELAY_MILLIS;
     this.awsAssumedRoleArn = awsAssumedRoleArn;
     this.awsExternalId = awsExternalId;
-    this.deaggregate = deaggregate;
   }
 
   public KinesisIndexTaskIOConfig(
@@ -109,11 +120,10 @@ public class KinesisIndexTaskIOConfig extends SeekableStreamIndexTaskIOConfig<St
       DateTime maximumMessageTime,
       InputFormat inputFormat,
       String endpoint,
-      Integer recordsPerFetch,
       Integer fetchDelayMillis,
       String awsAssumedRoleArn,
       String awsExternalId,
-      boolean deaggregate
+      Long refreshRejectionPeriodsInMinutes
   )
   {
     this(
@@ -129,11 +139,11 @@ public class KinesisIndexTaskIOConfig extends SeekableStreamIndexTaskIOConfig<St
         maximumMessageTime,
         inputFormat,
         endpoint,
-        recordsPerFetch,
         fetchDelayMillis,
         awsAssumedRoleArn,
         awsExternalId,
-        deaggregate
+        refreshRejectionPeriodsInMinutes,
+        null  // boundedStreamConfig
     );
   }
 
@@ -203,33 +213,24 @@ public class KinesisIndexTaskIOConfig extends SeekableStreamIndexTaskIOConfig<St
   }
 
   @JsonProperty
-  public int getRecordsPerFetch()
-  {
-    return recordsPerFetch;
-  }
-
-  @JsonProperty
+  @JsonInclude(JsonInclude.Include.NON_DEFAULT)
   public int getFetchDelayMillis()
   {
     return fetchDelayMillis;
   }
 
   @JsonProperty
+  @JsonInclude(JsonInclude.Include.NON_NULL)
   public String getAwsAssumedRoleArn()
   {
     return awsAssumedRoleArn;
   }
 
   @JsonProperty
+  @JsonInclude(JsonInclude.Include.NON_NULL)
   public String getAwsExternalId()
   {
     return awsExternalId;
-  }
-
-  @JsonProperty
-  public boolean isDeaggregate()
-  {
-    return deaggregate;
   }
 
   @Override
@@ -243,11 +244,9 @@ public class KinesisIndexTaskIOConfig extends SeekableStreamIndexTaskIOConfig<St
            ", minimumMessageTime=" + getMinimumMessageTime() +
            ", maximumMessageTime=" + getMaximumMessageTime() +
            ", endpoint='" + endpoint + '\'' +
-           ", recordsPerFetch=" + recordsPerFetch +
            ", fetchDelayMillis=" + fetchDelayMillis +
            ", awsAssumedRoleArn='" + awsAssumedRoleArn + '\'' +
            ", awsExternalId='" + awsExternalId + '\'' +
-           ", deaggregate=" + deaggregate +
            '}';
   }
 }

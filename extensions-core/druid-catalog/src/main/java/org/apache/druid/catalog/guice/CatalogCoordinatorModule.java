@@ -21,6 +21,7 @@ package org.apache.druid.catalog.guice;
 
 import com.fasterxml.jackson.databind.Module;
 import com.google.inject.Binder;
+import org.apache.druid.catalog.MetadataCatalog;
 import org.apache.druid.catalog.http.CatalogResource;
 import org.apache.druid.catalog.model.SchemaRegistry;
 import org.apache.druid.catalog.model.SchemaRegistryImpl;
@@ -28,7 +29,9 @@ import org.apache.druid.catalog.storage.CatalogStorage;
 import org.apache.druid.catalog.storage.MetadataStorageManager;
 import org.apache.druid.catalog.storage.sql.CatalogManager;
 import org.apache.druid.catalog.storage.sql.SQLCatalogManager;
+import org.apache.druid.catalog.sync.CatalogSource;
 import org.apache.druid.catalog.sync.CatalogUpdateNotifier;
+import org.apache.druid.catalog.sync.LocalMetadataCatalog;
 import org.apache.druid.discovery.NodeRole;
 import org.apache.druid.guice.Jerseys;
 import org.apache.druid.guice.LazySingleton;
@@ -36,8 +39,8 @@ import org.apache.druid.guice.LifecycleModule;
 import org.apache.druid.guice.ManageLifecycle;
 import org.apache.druid.guice.annotations.LoadScope;
 import org.apache.druid.initialization.DruidModule;
+import org.apache.druid.metadata.input.InputSourceModule;
 
-import java.util.Collections;
 import java.util.List;
 
 /**
@@ -66,6 +69,19 @@ public class CatalogCoordinatorModule implements DruidModule
         .bind(MetadataStorageManager.class)
         .in(LazySingleton.class);
 
+    binder
+        .bind(CatalogSource.class)
+        .to(CatalogStorage.class)
+        .in(LazySingleton.class);
+
+    binder
+        .bind(LocalMetadataCatalog.class)
+        .in(LazySingleton.class);
+    binder
+        .bind(MetadataCatalog.class)
+        .to(LocalMetadataCatalog.class)
+        .in(LazySingleton.class);
+
     // At present, the set of schemas is fixed.
     binder
         .bind(SchemaRegistry.class)
@@ -82,12 +98,17 @@ public class CatalogCoordinatorModule implements DruidModule
 
     // Public REST API and private cache sync API.
     Jerseys.addResource(binder, CatalogResource.class);
+
+    // The HTTP input source requires a HttpInputSourceConfig instance
+    // which is defined by the InputSourceModule. Note that MSQ also includes
+    // this module, but MSQ is not included in the Coordinator.
+    binder.install(new InputSourceModule());
   }
 
   @Override
   public List<? extends Module> getJacksonModules()
   {
-    return Collections.emptyList();
+    // We want this module to bring input sources along for the ride.
+    return new InputSourceModule().getJacksonModules();
   }
 }
-

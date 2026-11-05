@@ -20,7 +20,7 @@ import { Button, Callout, Collapse } from '@blueprintjs/core';
 import { IconNames } from '@blueprintjs/icons';
 import React, { useState } from 'react';
 
-import { ExecutionError } from '../../../druid-models';
+import type { ExecutionError } from '../../../druid-models';
 
 import './warning-callout.scss';
 
@@ -42,7 +42,7 @@ export const WarningCallout = React.memo(function WarningCallout(props: WarningC
       <p>{warning.error.errorMessage}</p>
       <Button
         text={showStack ? 'Hide stack' : 'Show stack'}
-        rightIcon={showStack ? IconNames.CARET_UP : IconNames.CARET_DOWN}
+        endIcon={showStack ? IconNames.CARET_UP : IconNames.CARET_DOWN}
         onClick={() => setShowStack(!showStack)}
       />
       <Collapse isOpen={showStack}>

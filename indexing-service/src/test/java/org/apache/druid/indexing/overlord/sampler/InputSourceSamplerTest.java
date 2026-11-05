@@ -23,25 +23,22 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import net.thisptr.jackson.jq.internal.misc.Lists;
+import com.google.common.collect.Lists;
 import org.apache.druid.client.indexing.SamplerResponse;
 import org.apache.druid.client.indexing.SamplerResponse.SamplerResponseRow;
-import org.apache.druid.data.input.FirehoseFactoryToInputSourceAdaptor;
 import org.apache.druid.data.input.InputFormat;
 import org.apache.druid.data.input.InputRowSchema;
 import org.apache.druid.data.input.InputSource;
 import org.apache.druid.data.input.InputSourceReader;
 import org.apache.druid.data.input.impl.ByteEntity;
 import org.apache.druid.data.input.impl.CsvInputFormat;
-import org.apache.druid.data.input.impl.DelimitedParseSpec;
 import org.apache.druid.data.input.impl.DimensionsSpec;
 import org.apache.druid.data.input.impl.InlineInputSource;
-import org.apache.druid.data.input.impl.InputRowParser;
-import org.apache.druid.data.input.impl.JSONParseSpec;
 import org.apache.druid.data.input.impl.JsonInputFormat;
 import org.apache.druid.data.input.impl.StringDimensionSchema;
-import org.apache.druid.data.input.impl.StringInputRowParser;
 import org.apache.druid.data.input.impl.TimestampSpec;
+import org.apache.druid.indexer.granularity.GranularitySpec;
+import org.apache.druid.indexer.granularity.UniformGranularitySpec;
 import org.apache.druid.indexing.seekablestream.RecordSupplierInputSource;
 import org.apache.druid.indexing.seekablestream.common.OrderedPartitionableRecord;
 import org.apache.druid.indexing.seekablestream.common.OrderedSequenceNumber;
@@ -59,19 +56,14 @@ import org.apache.druid.query.aggregation.LongSumAggregatorFactory;
 import org.apache.druid.query.expression.TestExprMacroTable;
 import org.apache.druid.query.filter.SelectorDimFilter;
 import org.apache.druid.segment.indexing.DataSchema;
-import org.apache.druid.segment.indexing.granularity.GranularitySpec;
-import org.apache.druid.segment.indexing.granularity.UniformGranularitySpec;
-import org.apache.druid.segment.realtime.firehose.InlineFirehoseFactory;
 import org.apache.druid.segment.transform.ExpressionTransform;
 import org.apache.druid.segment.transform.TransformSpec;
 import org.apache.druid.testing.InitializedNullHandlingTest;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedClass;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
@@ -87,7 +79,8 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-@RunWith(Parameterized.class)
+@ParameterizedClass(name = "parserType = {0}")
+@MethodSource("constructorFeeder")
 public class InputSourceSamplerTest extends InitializedNullHandlingTest
 {
   private enum ParserType
@@ -119,30 +112,22 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
   private List<Map<String, Object>> mapOfRows;
   private InputSourceSampler inputSourceSampler;
   private ParserType parserType;
-  private boolean useInputFormatApi;
 
-  @Rule
-  public ExpectedException expectedException = ExpectedException.none();
-
-  @Parameterized.Parameters(name = "parserType = {0}, useInputFormatApi={1}")
   public static Iterable<Object[]> constructorFeeder()
   {
     OBJECT_MAPPER.registerModules(new SamplerModule().getJacksonModules());
     return ImmutableList.of(
-        new Object[]{ParserType.STR_JSON, false},
-        new Object[]{ParserType.STR_JSON, true},
-        new Object[]{ParserType.STR_CSV, false},
-        new Object[]{ParserType.STR_CSV, true}
+        new Object[]{ParserType.STR_JSON},
+        new Object[]{ParserType.STR_CSV}
     );
   }
 
-  public InputSourceSamplerTest(ParserType parserType, boolean useInputFormatApi)
+  public InputSourceSamplerTest(ParserType parserType)
   {
     this.parserType = parserType;
-    this.useInputFormatApi = useInputFormatApi;
   }
 
-  @Before
+  @BeforeEach
   public void setupTest()
   {
     inputSourceSampler = new InputSourceSampler(OBJECT_MAPPER);
@@ -166,21 +151,22 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
   @Test
   public void testNoParams()
   {
-    expectedException.expect(NullPointerException.class);
-    expectedException.expectMessage("inputSource required");
-
-    inputSourceSampler.sample(null, null, null, null);
+    final NullPointerException exception = Assertions.assertThrows(
+        NullPointerException.class,
+        () -> inputSourceSampler.sample(null, null, null, null)
+    );
+    Assertions.assertEquals("inputSource required", exception.getMessage());
   }
 
   @Test
   public void testNoDataSchema()
   {
-    final InputSource inputSource = createInputSource(getTestRows(), null);
+    final InputSource inputSource = createInputSource(getTestRows());
     final SamplerResponse response = inputSourceSampler.sample(inputSource, createInputFormat(), null, null);
 
-    Assert.assertEquals(6, response.getNumRowsRead());
-    Assert.assertEquals(0, response.getNumRowsIndexed());
-    Assert.assertEquals(6, response.getData().size());
+    Assertions.assertEquals(6, response.getNumRowsRead());
+    Assertions.assertEquals(0, response.getNumRowsIndexed());
+    Assertions.assertEquals(6, response.getData().size());
 
     List<SamplerResponseRow> data = response.getData();
 
@@ -243,7 +229,7 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
   @Test
   public void testNoDataSchemaNumRows()
   {
-    final InputSource inputSource = createInputSource(getTestRows(), null);
+    final InputSource inputSource = createInputSource(getTestRows());
     final SamplerResponse response = inputSourceSampler.sample(
         inputSource,
         createInputFormat(),
@@ -251,9 +237,9 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
         new SamplerConfig(3, null, null, null)
     );
 
-    Assert.assertEquals(3, response.getNumRowsRead());
-    Assert.assertEquals(0, response.getNumRowsIndexed());
-    Assert.assertEquals(3, response.getData().size());
+    Assertions.assertEquals(3, response.getNumRowsRead());
+    Assertions.assertEquals(0, response.getNumRowsIndexed());
+    Assertions.assertEquals(3, response.getData().size());
 
     List<SamplerResponseRow> data = response.getData();
 
@@ -287,19 +273,19 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
   }
 
   @Test
-  public void testMissingValueTimestampSpec() throws IOException
+  public void testMissingValueTimestampSpec()
   {
     final TimestampSpec timestampSpec = new TimestampSpec(null, null, DateTimes.of("1970"));
     final DimensionsSpec dimensionsSpec = new DimensionsSpec(null);
     final DataSchema dataSchema = createDataSchema(timestampSpec, dimensionsSpec, null, null, null);
-    final InputSource inputSource = createInputSource(getTestRows(), dataSchema);
+    final InputSource inputSource = createInputSource(getTestRows());
     final InputFormat inputFormat = createInputFormat();
 
     SamplerResponse response = inputSourceSampler.sample(inputSource, inputFormat, dataSchema, null);
 
-    Assert.assertEquals(6, response.getNumRowsRead());
-    Assert.assertEquals(6, response.getNumRowsIndexed());
-    Assert.assertEquals(6, response.getData().size());
+    Assertions.assertEquals(6, response.getNumRowsRead());
+    Assertions.assertEquals(6, response.getNumRowsIndexed());
+    Assertions.assertEquals(6, response.getData().size());
 
     List<SamplerResponseRow> data = response.getData();
 
@@ -396,19 +382,19 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
   }
 
   @Test
-  public void testWithTimestampSpec() throws IOException
+  public void testWithTimestampSpec()
   {
     final TimestampSpec timestampSpec = new TimestampSpec("t", null, null);
     final DimensionsSpec dimensionsSpec = new DimensionsSpec(null);
     final DataSchema dataSchema = createDataSchema(timestampSpec, dimensionsSpec, null, null, null);
-    final InputSource inputSource = createInputSource(getTestRows(), dataSchema);
+    final InputSource inputSource = createInputSource(getTestRows());
     final InputFormat inputFormat = createInputFormat();
 
     SamplerResponse response = inputSourceSampler.sample(inputSource, inputFormat, dataSchema, null);
 
-    Assert.assertEquals(6, response.getNumRowsRead());
-    Assert.assertEquals(5, response.getNumRowsIndexed());
-    Assert.assertEquals(6, response.getData().size());
+    Assertions.assertEquals(6, response.getNumRowsRead());
+    Assertions.assertEquals(5, response.getNumRowsIndexed());
+    Assertions.assertEquals(6, response.getData().size());
 
     List<SamplerResponseRow> data = response.getData();
 
@@ -494,21 +480,21 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
   }
 
   @Test
-  public void testWithDimensionSpec() throws IOException
+  public void testWithDimensionSpec()
   {
     final TimestampSpec timestampSpec = new TimestampSpec("t", null, null);
     final DimensionsSpec dimensionsSpec = new DimensionsSpec(
         ImmutableList.of(StringDimensionSchema.create("dim1"), StringDimensionSchema.create("met1"))
     );
     final DataSchema dataSchema = createDataSchema(timestampSpec, dimensionsSpec, null, null, null);
-    final InputSource inputSource = createInputSource(getTestRows(), dataSchema);
+    final InputSource inputSource = createInputSource(getTestRows());
     final InputFormat inputFormat = createInputFormat();
 
     SamplerResponse response = inputSourceSampler.sample(inputSource, inputFormat, dataSchema, null);
 
-    Assert.assertEquals(6, response.getNumRowsRead());
-    Assert.assertEquals(5, response.getNumRowsIndexed());
-    Assert.assertEquals(6, response.getData().size());
+    Assertions.assertEquals(6, response.getNumRowsRead());
+    Assertions.assertEquals(5, response.getNumRowsIndexed());
+    Assertions.assertEquals(6, response.getData().size());
 
     List<SamplerResponseRow> data = response.getData();
 
@@ -589,7 +575,7 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
   }
 
   @Test
-  public void testWithNoRollup() throws IOException
+  public void testWithNoRollup()
   {
     final TimestampSpec timestampSpec = new TimestampSpec("t", null, null);
     final DimensionsSpec dimensionsSpec = new DimensionsSpec(null);
@@ -607,14 +593,14 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
         granularitySpec,
         null
     );
-    final InputSource inputSource = createInputSource(getTestRows(), dataSchema);
+    final InputSource inputSource = createInputSource(getTestRows());
     final InputFormat inputFormat = createInputFormat();
 
     SamplerResponse response = inputSourceSampler.sample(inputSource, inputFormat, dataSchema, null);
 
-    Assert.assertEquals(6, response.getNumRowsRead());
-    Assert.assertEquals(5, response.getNumRowsIndexed());
-    Assert.assertEquals(6, response.getData().size());
+    Assertions.assertEquals(6, response.getNumRowsRead());
+    Assertions.assertEquals(5, response.getNumRowsIndexed());
+    Assertions.assertEquals(6, response.getData().size());
 
     List<SamplerResponseRow> data = response.getData();
 
@@ -700,7 +686,7 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
   }
 
   @Test
-  public void testWithRollup() throws IOException
+  public void testWithRollup()
   {
     final TimestampSpec timestampSpec = new TimestampSpec("t", null, null);
     final DimensionsSpec dimensionsSpec = new DimensionsSpec(null);
@@ -718,14 +704,14 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
         granularitySpec,
         null
     );
-    final InputSource inputSource = createInputSource(getTestRows(), dataSchema);
+    final InputSource inputSource = createInputSource(getTestRows());
     final InputFormat inputFormat = createInputFormat();
 
     SamplerResponse response = inputSourceSampler.sample(inputSource, inputFormat, dataSchema, null);
 
-    Assert.assertEquals(6, response.getNumRowsRead());
-    Assert.assertEquals(5, response.getNumRowsIndexed());
-    Assert.assertEquals(4, response.getData().size());
+    Assertions.assertEquals(6, response.getNumRowsRead());
+    Assertions.assertEquals(5, response.getNumRowsIndexed());
+    Assertions.assertEquals(4, response.getData().size());
 
     List<SamplerResponseRow> data = response.getData();
 
@@ -783,7 +769,7 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
   }
 
   @Test
-  public void testWithMoreRollup() throws IOException
+  public void testWithMoreRollup()
   {
     final TimestampSpec timestampSpec = new TimestampSpec("t", null, null);
     final DimensionsSpec dimensionsSpec = new DimensionsSpec(ImmutableList.of(StringDimensionSchema.create("dim1")));
@@ -801,14 +787,14 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
         granularitySpec,
         null
     );
-    final InputSource inputSource = createInputSource(getTestRows(), dataSchema);
+    final InputSource inputSource = createInputSource(getTestRows());
     final InputFormat inputFormat = createInputFormat();
 
     SamplerResponse response = inputSourceSampler.sample(inputSource, inputFormat, dataSchema, null);
 
-    Assert.assertEquals(6, response.getNumRowsRead());
-    Assert.assertEquals(5, response.getNumRowsIndexed());
-    Assert.assertEquals(3, response.getData().size());
+    Assertions.assertEquals(6, response.getNumRowsRead());
+    Assertions.assertEquals(5, response.getNumRowsIndexed());
+    Assertions.assertEquals(3, response.getData().size());
 
     List<SamplerResponseRow> data = response.getData();
 
@@ -850,7 +836,7 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
   }
 
   @Test
-  public void testWithTransformsAutoDimensions() throws IOException
+  public void testWithTransformsAutoDimensions()
   {
     final TimestampSpec timestampSpec = new TimestampSpec("t", null, null);
     final DimensionsSpec dimensionsSpec = new DimensionsSpec(null);
@@ -872,14 +858,14 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
         granularitySpec,
         transformSpec
     );
-    final InputSource inputSource = createInputSource(getTestRows(), dataSchema);
+    final InputSource inputSource = createInputSource(getTestRows());
     final InputFormat inputFormat = createInputFormat();
 
     SamplerResponse response = inputSourceSampler.sample(inputSource, inputFormat, dataSchema, null);
 
-    Assert.assertEquals(6, response.getNumRowsRead());
-    Assert.assertEquals(5, response.getNumRowsIndexed());
-    Assert.assertEquals(4, response.getData().size());
+    Assertions.assertEquals(6, response.getNumRowsRead());
+    Assertions.assertEquals(5, response.getNumRowsIndexed());
+    Assertions.assertEquals(4, response.getData().size());
 
     List<SamplerResponseRow> data = response.getData();
 
@@ -937,7 +923,7 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
   }
 
   @Test
-  public void testWithTransformsDimensionsSpec() throws IOException
+  public void testWithTransformsDimensionsSpec()
   {
     final TimestampSpec timestampSpec = new TimestampSpec("t", null, null);
     final DimensionsSpec dimensionsSpec = new DimensionsSpec(
@@ -961,14 +947,14 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
         granularitySpec,
         transformSpec
     );
-    final InputSource inputSource = createInputSource(getTestRows(), dataSchema);
+    final InputSource inputSource = createInputSource(getTestRows());
     final InputFormat inputFormat = createInputFormat();
 
     SamplerResponse response = inputSourceSampler.sample(inputSource, inputFormat, dataSchema, null);
 
-    Assert.assertEquals(6, response.getNumRowsRead());
-    Assert.assertEquals(5, response.getNumRowsIndexed());
-    Assert.assertEquals(3, response.getData().size());
+    Assertions.assertEquals(6, response.getNumRowsRead());
+    Assertions.assertEquals(5, response.getNumRowsIndexed());
+    Assertions.assertEquals(3, response.getData().size());
 
     List<SamplerResponseRow> data = response.getData();
 
@@ -1010,7 +996,7 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
   }
 
   @Test
-  public void testWithFilter() throws IOException
+  public void testWithFilter()
   {
     final TimestampSpec timestampSpec = new TimestampSpec("t", null, null);
     final DimensionsSpec dimensionsSpec = new DimensionsSpec(null);
@@ -1029,14 +1015,14 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
         granularitySpec,
         transformSpec
     );
-    final InputSource inputSource = createInputSource(getTestRows(), dataSchema);
+    final InputSource inputSource = createInputSource(getTestRows());
     final InputFormat inputFormat = createInputFormat();
 
     SamplerResponse response = inputSourceSampler.sample(inputSource, inputFormat, dataSchema, null);
 
-    Assert.assertEquals(5, response.getNumRowsRead());
-    Assert.assertEquals(4, response.getNumRowsIndexed());
-    Assert.assertEquals(3, response.getData().size());
+    Assertions.assertEquals(5, response.getNumRowsRead());
+    Assertions.assertEquals(4, response.getNumRowsIndexed());
+    Assertions.assertEquals(3, response.getData().size());
 
     List<SamplerResponseRow> data = response.getData();
 
@@ -1116,14 +1102,14 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
                       "2019-04-22T12:00,foo2,,invalidNumber" :
                       OBJECT_MAPPER.writeValueAsString(rawColumns4ParseExceptionRow));
 
-    final InputSource inputSource = createInputSource(inputTestRows, dataSchema);
+    final InputSource inputSource = createInputSource(inputTestRows);
     final InputFormat inputFormat = createInputFormat();
 
     SamplerResponse response = inputSourceSampler.sample(inputSource, inputFormat, dataSchema, null);
 
-    Assert.assertEquals(7, response.getNumRowsRead());
-    Assert.assertEquals(5, response.getNumRowsIndexed());
-    Assert.assertEquals(4, response.getData().size());
+    Assertions.assertEquals(7, response.getNumRowsRead());
+    Assertions.assertEquals(5, response.getNumRowsIndexed());
+    Assertions.assertEquals(4, response.getData().size());
 
     List<SamplerResponseRow> data = response.getData();
 
@@ -1167,8 +1153,8 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
     // the last row has parse exception when indexing, check if rawColumns and exception message match the expected
     //
     String indexParseExceptioMessage = ParserType.STR_CSV.equals(parserType)
-           ? "Found unparseable columns in row: [SamplerInputRow{row=TransformedInputRow{row=MapBasedInputRow{timestamp=2019-04-22T12:00:00.000Z, event={t=2019-04-22T12:00, dim1=foo2, dim2=null, met1=invalidNumber}, dimensions=[dim1PlusBar]}}}], exceptions: [Unable to parse value[invalidNumber] for field[met1]]"
-           : "Found unparseable columns in row: [SamplerInputRow{row=TransformedInputRow{row=MapBasedInputRow{timestamp=2019-04-22T12:00:00.000Z, event={t=2019-04-22T12:00, dim1=foo2, met1=invalidNumber}, dimensions=[dim1PlusBar]}}}], exceptions: [Unable to parse value[invalidNumber] for field[met1]]";
+           ? "Found unparseable columns in row: [SamplerInputRow{row=TransformedInputRow{row={timestamp=2019-04-22T12:00:00.000Z, event={t=2019-04-22T12:00, dim1=foo2, dim2=null, met1=invalidNumber}, dimensions=[dim1PlusBar]}}}], exceptions: [Unable to parse value[invalidNumber] for field[met1]]"
+           : "Found unparseable columns in row: [SamplerInputRow{row=TransformedInputRow{row={timestamp=2019-04-22T12:00:00.000Z, event={t=2019-04-22T12:00, dim1=foo2, met1=invalidNumber}, dimensions=[dim1PlusBar]}}}], exceptions: [Unable to parse value[invalidNumber] for field[met1]]";
     assertEqualsSamplerResponseRow(
         new SamplerResponseRow(
             rawColumns4ParseExceptionRow,
@@ -1192,9 +1178,9 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
    *
    */
   @Test
-  public void testMultipleJsonStringInOneBlock() throws IOException
+  public void testMultipleJsonStringInOneBlock()
   {
-    if (!ParserType.STR_JSON.equals(parserType) || !useInputFormatApi) {
+    if (!ParserType.STR_JSON.equals(parserType)) {
       return;
     }
 
@@ -1242,9 +1228,9 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
     //
     int illegalRows = STR_JSON_ROWS.size();
     int legalRows = STR_JSON_ROWS.size() - 1;
-    Assert.assertEquals(illegalRows + legalRows, response.getNumRowsRead());
-    Assert.assertEquals(legalRows, response.getNumRowsIndexed());
-    Assert.assertEquals(illegalRows + 2, response.getData().size());
+    Assertions.assertEquals(illegalRows + legalRows, response.getNumRowsRead());
+    Assertions.assertEquals(legalRows, response.getNumRowsIndexed());
+    Assertions.assertEquals(illegalRows + 2, response.getData().size());
 
     List<SamplerResponseRow> data = response.getData();
     List<Map<String, Object>> rawColumnList = this.getRawColumns();
@@ -1254,11 +1240,8 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
     // first n rows are related to the first json block which fails to parse
     //
     String parseExceptionMessage;
-    if (useInputFormatApi) {
-      parseExceptionMessage = "Timestamp[bad_timestamp] is unparseable! Event: {t=bad_timestamp, dim1=foo, met1=6}";
-    } else {
-      parseExceptionMessage = "Timestamp[bad_timestamp] is unparseable! Event: {t=bad_timestamp, dim1=foo, met1=6}";
-    }
+    parseExceptionMessage = "Timestamp[bad_timestamp] is unparseable! Event: {t=bad_timestamp, dim1=foo, met1=6}";
+
     for (; index < illegalRows; index++) {
       assertEqualsSamplerResponseRow(
           new SamplerResponseRow(
@@ -1302,7 +1285,7 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
     );
   }
 
-  @Test(expected = SamplerException.class)
+  @Test
   public void testReaderCreationException()
   {
     InputSource failingReaderInputSource = new InputSource()
@@ -1329,11 +1312,14 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
         throw new RuntimeException();
       }
     };
-    inputSourceSampler.sample(failingReaderInputSource, null, null, null);
+    Assertions.assertThrows(
+        SamplerException.class,
+        () -> inputSourceSampler.sample(failingReaderInputSource, null, null, null)
+    );
   }
 
   @Test
-  public void testRowLimiting() throws IOException
+  public void testRowLimiting()
   {
     final TimestampSpec timestampSpec = new TimestampSpec("t", null, null);
     final DimensionsSpec dimensionsSpec = new DimensionsSpec(null);
@@ -1351,7 +1337,7 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
         granularitySpec,
         null
     );
-    final InputSource inputSource = createInputSource(getTestRows(), dataSchema);
+    final InputSource inputSource = createInputSource(getTestRows());
     final InputFormat inputFormat = createInputFormat();
 
     SamplerResponse response = inputSourceSampler.sample(
@@ -1361,14 +1347,14 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
         new SamplerConfig(4, null, null, null)
     );
 
-    Assert.assertEquals(4, response.getNumRowsRead());
-    Assert.assertEquals(4, response.getNumRowsIndexed());
-    Assert.assertEquals(2, response.getData().size());
+    Assertions.assertEquals(4, response.getNumRowsRead());
+    Assertions.assertEquals(4, response.getNumRowsIndexed());
+    Assertions.assertEquals(2, response.getData().size());
 
   }
 
   @Test
-  public void testMaxBytesInMemoryLimiting() throws IOException
+  public void testMaxBytesInMemoryLimiting()
   {
     final TimestampSpec timestampSpec = new TimestampSpec("t", null, null);
     final DimensionsSpec dimensionsSpec = new DimensionsSpec(null);
@@ -1386,7 +1372,7 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
         granularitySpec,
         null
     );
-    final InputSource inputSource = createInputSource(getTestRows(), dataSchema);
+    final InputSource inputSource = createInputSource(getTestRows());
     final InputFormat inputFormat = createInputFormat();
 
     SamplerResponse response = inputSourceSampler.sample(
@@ -1396,13 +1382,13 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
         new SamplerConfig(null, null, HumanReadableBytes.valueOf(256), null)
     );
 
-    Assert.assertEquals(4, response.getNumRowsRead());
-    Assert.assertEquals(4, response.getNumRowsIndexed());
-    Assert.assertEquals(2, response.getData().size());
+    Assertions.assertEquals(4, response.getNumRowsRead());
+    Assertions.assertEquals(4, response.getNumRowsIndexed());
+    Assertions.assertEquals(2, response.getData().size());
   }
 
   @Test
-  public void testMaxClientResponseBytesLimiting() throws IOException
+  public void testMaxClientResponseBytesLimiting()
   {
     final TimestampSpec timestampSpec = new TimestampSpec("t", null, null);
     final DimensionsSpec dimensionsSpec = new DimensionsSpec(null);
@@ -1420,7 +1406,7 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
         granularitySpec,
         null
     );
-    final InputSource inputSource = createInputSource(getTestRows(), dataSchema);
+    final InputSource inputSource = createInputSource(getTestRows());
     final InputFormat inputFormat = createInputFormat();
 
     SamplerResponse response = inputSourceSampler.sample(
@@ -1430,9 +1416,9 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
         new SamplerConfig(null, null, null, HumanReadableBytes.valueOf(300))
     );
 
-    Assert.assertEquals(4, response.getNumRowsRead());
-    Assert.assertEquals(4, response.getNumRowsIndexed());
-    Assert.assertEquals(2, response.getData().size());
+    Assertions.assertEquals(4, response.getNumRowsRead());
+    Assertions.assertEquals(4, response.getNumRowsIndexed());
+    Assertions.assertEquals(2, response.getData().size());
   }
 
   private List<String> getTestRows()
@@ -1465,29 +1451,7 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
       case STR_JSON:
         return new JsonInputFormat(null, null, null, null, null);
       case STR_CSV:
-        return new CsvInputFormat(ImmutableList.of("t", "dim1", "dim2", "met1"), null, null, false, 0);
-      default:
-        throw new IAE("Unknown parser type: %s", parserType);
-    }
-  }
-
-  private InputRowParser createInputRowParser(TimestampSpec timestampSpec, DimensionsSpec dimensionsSpec)
-  {
-    switch (parserType) {
-      case STR_JSON:
-        return new StringInputRowParser(new JSONParseSpec(timestampSpec, dimensionsSpec, null, null, null));
-      case STR_CSV:
-        return new StringInputRowParser(
-            new DelimitedParseSpec(
-                timestampSpec,
-                dimensionsSpec,
-                ",",
-                null,
-                ImmutableList.of("t", "dim1", "dim2", "met1"),
-                false,
-                0
-            )
-        );
+        return new CsvInputFormat(ImmutableList.of("t", "dim1", "dim2", "met1"), null, null, false, 0, null);
       default:
         throw new IAE("Unknown parser type: %s", parserType);
     }
@@ -1499,74 +1463,34 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
       @Nullable AggregatorFactory[] aggregators,
       @Nullable GranularitySpec granularitySpec,
       @Nullable TransformSpec transformSpec
-  ) throws IOException
+  )
   {
-    if (useInputFormatApi) {
-      return new DataSchema(
-          "sampler",
-          timestampSpec,
-          dimensionsSpec,
-          aggregators,
-          granularitySpec,
-          transformSpec
-      );
-    } else {
-      final Map<String, Object> parserMap = getParserMap(createInputRowParser(timestampSpec, dimensionsSpec));
-      return new DataSchema(
-          "sampler",
-          parserMap,
-          aggregators,
-          granularitySpec,
-          transformSpec,
-          OBJECT_MAPPER
-      );
-    }
+    return DataSchema.builder()
+                     .withDataSource("sampler")
+                     .withTimestamp(timestampSpec)
+                     .withDimensions(dimensionsSpec)
+                     .withAggregators(aggregators)
+                     .withGranularity(granularitySpec)
+                     .withTransform(transformSpec)
+                     .build();
   }
 
-  private Map<String, Object> getParserMap(InputRowParser parser) throws IOException
-  {
-    if (useInputFormatApi) {
-      throw new RuntimeException("Don't call this if useInputFormatApi = true");
-    }
-    return OBJECT_MAPPER.readValue(OBJECT_MAPPER.writeValueAsBytes(parser), Map.class);
-  }
-
-  private InputSource createInputSource(List<String> rows, DataSchema dataSchema)
+  private InputSource createInputSource(List<String> rows)
   {
     final String data = String.join("\n", rows);
-    if (useInputFormatApi) {
-      return new InlineInputSource(data);
-    } else {
-      return new FirehoseFactoryToInputSourceAdaptor(
-          new InlineFirehoseFactory(data),
-          createInputRowParser(
-              dataSchema == null ? new TimestampSpec(null, null, null) : dataSchema.getTimestampSpec(),
-              dataSchema == null ? new DimensionsSpec(null) : dataSchema.getDimensionsSpec()
-          )
-      );
-    }
+    return new InlineInputSource(data);
   }
 
   private String getUnparseableTimestampString()
   {
-    if (useInputFormatApi) {
-      return ParserType.STR_CSV.equals(parserType)
-             ? "Timestamp[bad_timestamp] is unparseable! Event: {t=bad_timestamp, dim1=foo, dim2=null, met1=6} (Line: 6)"
-             : "Timestamp[bad_timestamp] is unparseable! Event: {t=bad_timestamp, dim1=foo, met1=6} (Line: 6)";
-    } else {
-      return ParserType.STR_CSV.equals(parserType)
-             ? "Timestamp[bad_timestamp] is unparseable! Event: {t=bad_timestamp, dim1=foo, dim2=null, met1=6}"
-             : "Timestamp[bad_timestamp] is unparseable! Event: {t=bad_timestamp, dim1=foo, met1=6}";
-    }
+    return ParserType.STR_CSV.equals(parserType)
+           ? "Timestamp[bad_timestamp] is unparseable! Event: {t=bad_timestamp, dim1=foo, dim2=null, met1=6} (Line: 6)"
+           : "Timestamp[bad_timestamp] is unparseable! Event: {t=bad_timestamp, dim1=foo, met1=6} (Line: 6)";
   }
 
   private String unparseableTimestampErrorString(Map<String, Object> rawColumns, int line)
   {
-    if (useInputFormatApi) {
-      return StringUtils.format("Timestamp[null] is unparseable! Event: %s (Line: %d)", rawColumns, line);
-    } else {
-      return StringUtils.format("Timestamp[null] is unparseable! Event: %s", rawColumns);
-    }
+    return StringUtils.format("Timestamp[null] is unparseable! Event: %s (Line: %d)", rawColumns, line);
   }
 
   @Nullable
@@ -1582,10 +1506,10 @@ public class InputSourceSamplerTest extends InitializedNullHandlingTest
 
   private static void assertEqualsSamplerResponseRow(SamplerResponseRow row1, SamplerResponseRow row2)
   {
-    Assert.assertTrue(equalsIgnoringType(row1.getInput(), row2.getInput()));
-    Assert.assertEquals(row1.getParsed(), row2.getParsed());
-    Assert.assertEquals(row1.getError(), row2.getError());
-    Assert.assertEquals(row1.isUnparseable(), row2.isUnparseable());
+    Assertions.assertTrue(equalsIgnoringType(row1.getInput(), row2.getInput()));
+    Assertions.assertEquals(row1.getParsed(), row2.getParsed());
+    Assertions.assertEquals(row1.getError(), row2.getError());
+    Assertions.assertEquals(row1.isUnparseable(), row2.isUnparseable());
   }
 
   private static boolean equalsIgnoringType(Map<String, Object> map1, Map<String, Object> map2)

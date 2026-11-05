@@ -19,9 +19,14 @@
 
 package org.apache.druid.sql.calcite.rel;
 
+import com.google.common.collect.Iterables;
 import org.apache.calcite.plan.RelOptCluster;
 import org.apache.calcite.plan.RelTraitSet;
+import org.apache.calcite.plan.volcano.RelSubset;
 import org.apache.calcite.rel.AbstractRelNode;
+import org.apache.calcite.rel.RelNode;
+import org.apache.calcite.rel.RelShuttleImpl;
+import org.apache.calcite.rel.RelWriter;
 import org.apache.druid.server.QueryResponse;
 import org.apache.druid.sql.calcite.planner.PlannerContext;
 
@@ -95,10 +100,59 @@ public abstract class DruidRel<T extends DruidRel<?>> extends AbstractRelNode
     return plannerContext;
   }
 
+  /**
+   * Overridden to ensure that subclasses provide a proper implementation. The default implementation from
+   * {@link AbstractRelNode} does nothing and is not appropriate.
+   */
+  @Override
+  public RelWriter explainTerms(RelWriter pw)
+  {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  protected Object clone() throws CloneNotSupportedException
+  {
+    // RelNode implements Cloneable, but our class of rels is not cloned, so does not need to implement clone().
+    throw new CloneNotSupportedException();
+  }
+
+  /**
+   * Returns a copy of this rel with the {@link DruidConvention} trait.
+   */
   public abstract T asDruidConvention();
 
   /**
    * Get the set of names of table datasources read by this DruidRel
    */
   public abstract Set<String> getDataSourceNames();
+
+  public final RelNode unwrapLogicalPlan()
+  {
+    return accept(new LogicalPlanUnwrapperShuttle());
+  }
+
+  private static class LogicalPlanUnwrapperShuttle extends RelShuttleImpl
+  {
+    @Override
+    public RelNode visit(RelNode other)
+    {
+      return super.visit(visitNode(other));
+    }
+
+    private RelNode visitNode(RelNode other)
+    {
+      if (other instanceof RelSubset) {
+        final RelSubset subset = (RelSubset) other;
+        return visitNode(Iterables.getFirst(subset.getRels(), null));
+      }
+      if (other instanceof DruidRel<?>) {
+        DruidRel<?> druidRel = (DruidRel<?>) other;
+        if (druidRel.getPartialDruidQuery() != null && druidRel.getPartialDruidQuery().leafRel() != null) {
+          return druidRel.getPartialDruidQuery().leafRel();
+        }
+      }
+      return other;
+    }
+  }
 }

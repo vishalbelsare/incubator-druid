@@ -24,7 +24,6 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
 import org.apache.druid.math.expr.Expr;
 import org.apache.druid.math.expr.ExpressionType;
-import org.apache.druid.math.expr.Parser;
 import org.apache.druid.segment.ColumnInspector;
 import org.apache.druid.segment.column.ColumnCapabilities;
 import org.apache.druid.segment.column.ColumnType;
@@ -55,7 +54,6 @@ public class ExpressionPlanner
   public static ExpressionPlan plan(ColumnInspector inspector, Expr expression)
   {
     final Expr.BindingAnalysis analysis = expression.analyzeInputs();
-    Parser.validateExpr(expression, analysis);
 
     EnumSet<ExpressionPlan.Trait> traits = EnumSet.noneOf(ExpressionPlan.Trait.class);
     Set<String> noCapabilities = new HashSet<>();
@@ -67,7 +65,7 @@ public class ExpressionPlanner
     final Set<String> columns = analysis.getRequiredBindings();
 
     // check and set traits which allow optimized selectors to be created
-    if (columns.isEmpty()) {
+    if (columns.isEmpty() && !analysis.isNonDeterministic()) {
       traits.add(ExpressionPlan.Trait.CONSTANT);
     } else if (expression.isIdentifier()) {
       traits.add(ExpressionPlan.Trait.IDENTIFIER);
@@ -87,7 +85,7 @@ public class ExpressionPlanner
         boolean isSingleInputMappable = false;
         boolean isSingleInputScalar = capabilities.hasMultipleValues().isFalse();
         if (capabilities.is(ValueType.STRING)) {
-          isSingleInputScalar &= capabilities.isDictionaryEncoded().isTrue();
+          isSingleInputScalar = isSingleInputScalar && capabilities.isDictionaryEncoded().isTrue();
           isSingleInputMappable = capabilities.isDictionaryEncoded().isTrue() &&
                                   !capabilities.hasMultipleValues().isUnknown();
         }
@@ -184,16 +182,13 @@ public class ExpressionPlanner
       traits.remove(ExpressionPlan.Trait.SINGLE_INPUT_MAPPABLE);
     }
 
-    // vectorized expressions do not support incomplete, multi-valued inputs or outputs, or implicit mapping
-    // they also do not support unknown inputs, but they also do not currently have to deal with them, as missing
-    // capabilites is indicative of a non-existent column instead of an unknown schema. If this ever changes,
+    // vectorized expressions do not support unknown inputs, but they also do not currently have to deal with them, as
+    // missing capabilites is indicative of a non-existent column instead of an unknown schema. If this ever changes,
     // this check should also change
     boolean supportsVector = ExpressionPlan.none(
         traits,
         ExpressionPlan.Trait.INCOMPLETE_INPUTS,
-        ExpressionPlan.Trait.NEEDS_APPLIED,
-        ExpressionPlan.Trait.NON_SCALAR_INPUTS,
-        ExpressionPlan.Trait.NON_SCALAR_OUTPUT
+        ExpressionPlan.Trait.NEEDS_APPLIED
     );
 
     if (supportsVector && expression.canVectorize(inspector)) {

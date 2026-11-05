@@ -19,11 +19,13 @@
 
 package org.apache.druid.frame.write;
 
+import org.apache.druid.frame.FrameType;
 import org.apache.druid.frame.allocation.AppendableMemory;
 import org.apache.druid.frame.allocation.MemoryAllocator;
+import org.apache.druid.frame.allocation.MemoryAllocatorFactory;
 import org.apache.druid.frame.field.FieldWriter;
 import org.apache.druid.frame.field.FieldWriters;
-import org.apache.druid.frame.key.SortColumn;
+import org.apache.druid.frame.key.KeyColumn;
 import org.apache.druid.frame.read.FrameReaderUtils;
 import org.apache.druid.segment.ColumnSelectorFactory;
 import org.apache.druid.segment.column.ColumnType;
@@ -35,19 +37,25 @@ import java.util.List;
 
 public class RowBasedFrameWriterFactory implements FrameWriterFactory
 {
-  private final MemoryAllocator allocator;
+  private final MemoryAllocatorFactory allocatorFactory;
+  private final FrameType frameType;
   private final RowSignature signature;
-  private final List<SortColumn> sortColumns;
+  private final List<KeyColumn> sortColumns;
+  private final boolean removeNullBytes;
 
   public RowBasedFrameWriterFactory(
-      final MemoryAllocator allocator,
+      final MemoryAllocatorFactory allocatorFactory,
+      final FrameType frameType,
       final RowSignature signature,
-      final List<SortColumn> sortColumns
+      final List<KeyColumn> sortColumns,
+      final boolean removeNullBytes
   )
   {
-    this.allocator = allocator;
+    this.allocatorFactory = allocatorFactory;
+    this.frameType = frameType;
     this.signature = signature;
     this.sortColumns = sortColumns;
+    this.removeNullBytes = removeNullBytes;
 
     FrameWriterUtils.verifySortColumns(sortColumns, signature);
   }
@@ -55,6 +63,8 @@ public class RowBasedFrameWriterFactory implements FrameWriterFactory
   @Override
   public FrameWriter newFrameWriter(final ColumnSelectorFactory columnSelectorFactory)
   {
+    final MemoryAllocator allocator = allocatorFactory.newAllocator();
+
     // Only need rowOrderMemory if we are sorting.
     final AppendableMemory rowOrderMemory = sortColumns.isEmpty() ? null : AppendableMemory.create(allocator);
     final AppendableMemory rowOffsetMemory = AppendableMemory.create(allocator);
@@ -64,10 +74,11 @@ public class RowBasedFrameWriterFactory implements FrameWriterFactory
     );
 
     return new RowBasedFrameWriter(
+        frameType,
         signature,
         sortColumns,
-        makeFieldWriters(columnSelectorFactory),
-        FrameReaderUtils.makeRowMemorySupplier(columnSelectorFactory, signature),
+        makeFieldWriters(frameType, columnSelectorFactory, removeNullBytes),
+        FrameReaderUtils.makeRowMemorySupplier(columnSelectorFactory, frameType, signature),
         rowOrderMemory,
         rowOffsetMemory,
         dataMemory
@@ -77,7 +88,19 @@ public class RowBasedFrameWriterFactory implements FrameWriterFactory
   @Override
   public long allocatorCapacity()
   {
-    return allocator.capacity();
+    return allocatorFactory.allocatorCapacity();
+  }
+
+  @Override
+  public RowSignature signature()
+  {
+    return signature;
+  }
+
+  @Override
+  public FrameType frameType()
+  {
+    return frameType;
   }
 
   /**
@@ -86,7 +109,11 @@ public class RowBasedFrameWriterFactory implements FrameWriterFactory
    * The returned {@link FieldWriter} objects are not thread-safe, and should only be used with a
    * single frame writer.
    */
-  private List<FieldWriter> makeFieldWriters(final ColumnSelectorFactory columnSelectorFactory)
+  private List<FieldWriter> makeFieldWriters(
+      final FrameType frameType,
+      final ColumnSelectorFactory columnSelectorFactory,
+      final boolean removeNullBytes
+  )
   {
     final List<FieldWriter> fieldWriters = new ArrayList<>();
 
@@ -95,7 +122,7 @@ public class RowBasedFrameWriterFactory implements FrameWriterFactory
         final String column = signature.getColumnName(i);
         // note: null type won't work, but we'll get a nice error from FrameColumnWriters.create
         final ColumnType columnType = signature.getColumnType(i).orElse(null);
-        fieldWriters.add(FieldWriters.create(columnSelectorFactory, column, columnType));
+        fieldWriters.add(FieldWriters.create(frameType, columnSelectorFactory, column, columnType, removeNullBytes));
       }
     }
     catch (Throwable e) {

@@ -111,7 +111,7 @@ public class DruidUnionRel extends DruidRel<DruidUnionRel>
   {
     // Lazy: run each query in sequence, not all at once.
     if (limit == 0) {
-      return new QueryResponse<Object[]>(Sequences.empty(), ResponseContext.createEmpty());
+      return new QueryResponse<>(Sequences.empty(), ResponseContext.createEmpty());
     } else {
 
       // We run the first rel here for two reasons:
@@ -221,8 +221,6 @@ public class DruidUnionRel extends DruidRel<DruidUnionRel>
   @Override
   public RelWriter explainTerms(RelWriter pw)
   {
-    super.explainTerms(pw);
-
     for (int i = 0; i < rels.size(); i++) {
       pw.input(StringUtils.format("input#%d", i), rels.get(i));
     }

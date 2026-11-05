@@ -1,0 +1,188 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+package org.apache.druid.rpc;
+
+import com.google.common.util.concurrent.Futures;
+import com.google.common.util.concurrent.ListenableFuture;
+import io.netty.buffer.Unpooled;
+import io.netty.handler.codec.http.DefaultHttpContent;
+import io.netty.handler.codec.http.DefaultHttpResponse;
+import io.netty.handler.codec.http.HttpResponse;
+import io.netty.handler.codec.http.HttpResponseStatus;
+import io.netty.handler.codec.http.HttpVersion;
+import org.apache.druid.client.TestHttpClient;
+import org.apache.druid.java.util.common.Either;
+import org.apache.druid.java.util.http.client.response.ClientResponse;
+import org.apache.druid.java.util.http.client.response.HttpResponseHandler;
+import org.junit.jupiter.api.Assertions;
+
+import java.util.ArrayDeque;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Queue;
+import java.util.concurrent.CountDownLatch;
+
+/**
+ * Mock implementation of {@link ServiceClient}.
+ */
+public class MockServiceClient implements ServiceClient
+{
+  private final Queue<Expectation> expectations = new ArrayDeque<>(16);
+  private int requestNumber = -1;
+
+  @Override
+  public <IntermediateType, FinalType> ListenableFuture<FinalType> asyncRequest(
+      final RequestBuilder requestBuilder,
+      final HttpResponseHandler<IntermediateType, FinalType> handler
+  )
+  {
+    final Expectation expectation = Objects.requireNonNull(
+        expectations.poll(),
+        "No expectation configured for the next request"
+    );
+
+    requestNumber++;
+    Assertions.assertEquals(
+        expectation.request,
+        requestBuilder,
+        "request[" + requestNumber + "]"
+    );
+
+    if (expectation.response.isValue()) {
+      ClientResponse<IntermediateType> interm =
+          handler.handleResponse(expectation.response.valueOrThrow(), TestHttpClient.NOOP_TRAFFIC_COP);
+      // Netty 4: body content arrives via HttpContent chunks after the initial HttpResponse.
+      if (expectation.content != null) {
+        interm = handler.handleChunk(
+            interm,
+            new DefaultHttpContent(Unpooled.wrappedBuffer(expectation.content)),
+            1
+        );
+      }
+      final ClientResponse<FinalType> response = handler.done(interm);
+      return Futures.immediateFuture(response.getObj());
+    } else {
+      final Throwable error = expectation.response.error();
+      if (error instanceof BlockingSentinel sentinel) {
+        sentinel.requestStarted.countDown();
+        try {
+          Thread.sleep(10_000);
+          return Futures.immediateFailedFuture(new RuntimeException("expected interruption did not happen"));
+        }
+        catch (InterruptedException e) {
+          sentinel.requestInterrupted.countDown();
+          Thread.currentThread().interrupt();
+          return Futures.immediateFailedFuture(e);
+        }
+      }
+      return Futures.immediateFailedFuture(error);
+    }
+  }
+
+  @Override
+  public ServiceClient withRetryPolicy(final ServiceRetryPolicy retryPolicy)
+  {
+    return this;
+  }
+
+  public MockServiceClient expectAndRespond(final RequestBuilder request, final HttpResponse response)
+  {
+    expectations.add(new Expectation(request, Either.value(response), null));
+    return this;
+  }
+
+  public MockServiceClient expectAndRespond(
+      final RequestBuilder request,
+      final HttpResponseStatus status,
+      final Map<String, String> headers,
+      final byte[] content
+  )
+  {
+    final HttpResponse response = new DefaultHttpResponse(HttpVersion.HTTP_1_1, status);
+    for (Map.Entry<String, String> headerEntry : headers.entrySet()) {
+      response.headers().set(headerEntry.getKey(), headerEntry.getValue());
+    }
+    expectations.add(new Expectation(request, Either.value(response), content));
+    return this;
+  }
+
+  public MockServiceClient expectAndThrow(final RequestBuilder request, final Throwable e)
+  {
+    expectations.add(new Expectation(request, Either.error(e), null));
+    return this;
+  }
+
+  /**
+   * Counts down {@code requestStarted} when the request begins and {@code requestInterrupted} when the sleeping
+   * request thread is interrupted. Replaces the Netty-3 idiom of overriding {@code HttpResponse.getContent()} to
+   * block, which is no longer applicable in Netty 4 where the initial {@link HttpResponse} carries no body.
+   */
+  public MockServiceClient expectAndBlock(
+      final RequestBuilder request,
+      final CountDownLatch requestStarted,
+      final CountDownLatch requestInterrupted
+  )
+  {
+    expectations.add(
+        new Expectation(request, Either.error(new BlockingSentinel(requestStarted, requestInterrupted)), null)
+    );
+    return this;
+  }
+
+  private static class BlockingSentinel extends RuntimeException
+  {
+    private final CountDownLatch requestStarted;
+    private final CountDownLatch requestInterrupted;
+
+    BlockingSentinel(CountDownLatch requestStarted, CountDownLatch requestInterrupted)
+    {
+      this.requestStarted = requestStarted;
+      this.requestInterrupted = requestInterrupted;
+    }
+  }
+
+  public void verify()
+  {
+    Assertions.assertTrue(expectations.isEmpty(), "all requests were made");
+  }
+
+  private static class Expectation
+  {
+    private final RequestBuilder request;
+    private final Either<Throwable, HttpResponse> response;
+    private final byte[] content;
+
+    public Expectation(RequestBuilder request, Either<Throwable, HttpResponse> response, byte[] content)
+    {
+      this.request = request;
+      this.response = response;
+      this.content = content;
+    }
+
+    @Override
+    public String toString()
+    {
+      return "Expectation{" +
+             "request=" + request +
+             ", response=" + response +
+             '}';
+    }
+  }
+}

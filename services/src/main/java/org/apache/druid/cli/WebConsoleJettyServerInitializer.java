@@ -22,11 +22,10 @@ package org.apache.druid.cli;
 import com.google.common.collect.ImmutableList;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.server.security.AuthenticationUtils;
+import org.eclipse.jetty.ee8.servlet.ServletContextHandler;
 import org.eclipse.jetty.rewrite.handler.RedirectPatternRule;
 import org.eclipse.jetty.rewrite.handler.RewriteHandler;
-import org.eclipse.jetty.server.Handler;
-import org.eclipse.jetty.servlet.ServletContextHandler;
-import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.ResourceFactory;
 
 import java.util.List;
 
@@ -51,13 +50,13 @@ class WebConsoleJettyServerInitializer
     root.setInitParameter("org.eclipse.jetty.servlet.Default.redirectWelcome", "true");
     root.setWelcomeFiles(new String[]{WEB_CONSOLE_ROOT_DOCUMENT});
 
-    root.setBaseResource(Resource.newClassPathResource("org/apache/druid/console"));
+    root.setBaseResource(ResourceFactory.root().newClassLoaderResource("org/apache/druid/console", false));
 
     AuthenticationUtils.addNoopAuthenticationAndAuthorizationFilters(root, UNSECURED_PATHS_FOR_UI);
     AuthenticationUtils.addNoopAuthorizationFilters(root, UNAUTHORIZED_PATHS_FOR_UI);
   }
 
-  static Handler createWebConsoleRewriteHandler()
+  static RewriteHandler createWebConsoleRewriteHandler()
   {
     // redirect all legacy web consoles to current unified web console
     RewriteHandler rewrite = new RewriteHandler();

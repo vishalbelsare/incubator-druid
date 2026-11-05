@@ -23,23 +23,29 @@ import com.fasterxml.jackson.databind.Module;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.commons.io.IOUtils;
 import org.apache.druid.data.input.InputEntity;
+import org.apache.druid.data.input.InputRow;
+import org.apache.druid.data.input.MapBasedInputRow;
 import org.apache.druid.metadata.TestDerbyConnector;
 import org.apache.druid.segment.TestHelper;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
+import org.apache.druid.testing.TemporaryFolderExtension;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Collections;
 
 public class SqlEntityTest
 {
-  @Rule
+  @RegisterExtension
   public final TestDerbyConnector.DerbyConnectorRule derbyConnectorRule = new TestDerbyConnector.DerbyConnectorRule();
+  @RegisterExtension
+  public final TemporaryFolderExtension temporaryFolder = TemporaryFolderExtension.testCaseScoped();
 
   private final ObjectMapper mapper = TestHelper.makeSmileMapper();
   private TestDerbyConnector derbyConnector;
@@ -47,12 +53,8 @@ public class SqlEntityTest
 
   String VALID_SQL = "SELECT timestamp,a,b FROM FOOS_TABLE";
   String INVALID_SQL = "DONT SELECT timestamp,a,b FROM FOOS_TABLE";
-  String resultJson = "[{\"a\":\"0\","
-                      + "\"b\":\"0\","
-                      + "\"timestamp\":\"2011-01-12T00:00:00.000Z\""
-                      + "}]";
 
-  @Before
+  @BeforeEach
   public void setUp()
   {
     for (Module jacksonModule : new InputSourceModule().getJacksonModules()) {
@@ -65,70 +67,47 @@ public class SqlEntityTest
   {
     derbyConnector = derbyConnectorRule.getConnector();
     SqlTestUtils testUtils = new SqlTestUtils(derbyConnector);
-    testUtils.createAndUpdateTable(TABLE_NAME_1, 1);
-    File tmpFile = File.createTempFile(
-        "testQueryResults",
-        ""
-    );
-    InputEntity.CleanableFile queryResult = SqlEntity.openCleanableFile(
+    final InputRow expectedRow = testUtils.createTableWithRows(TABLE_NAME_1, 1).get(0);
+    final File tmpFile = temporaryFolder.newFile("testQueryResults");
+    final String actualJson;
+    try (final InputEntity.CleanableFile queryResult = SqlEntity.openCleanableFile(
         VALID_SQL,
-        testUtils.getDerbyFirehoseConnector(),
+        testUtils.getDerbyInputSourceConnector(),
         mapper,
         true,
         tmpFile
     );
-    InputStream queryInputStream = new FileInputStream(queryResult.file());
-    String actualJson = IOUtils.toString(queryInputStream, StandardCharsets.UTF_8);
-
-    Assert.assertEquals(actualJson, resultJson);
+         final InputStream queryInputStream = new FileInputStream(queryResult.file())) {
+      actualJson = IOUtils.toString(queryInputStream, StandardCharsets.UTF_8);
+    }
+    String expectedJson = mapper.writeValueAsString(
+        Collections.singletonList(((MapBasedInputRow) expectedRow).getEvent())
+    );
+    Assertions.assertEquals(actualJson, expectedJson);
     testUtils.dropTable(TABLE_NAME_1);
-  }
-
-  @Test(expected = IOException.class)
-  public void testFailOnInvalidQuery() throws IOException
-  {
-    derbyConnector = derbyConnectorRule.getConnector();
-    SqlTestUtils testUtils = new SqlTestUtils(derbyConnector);
-    testUtils.createAndUpdateTable(TABLE_NAME_1, 1);
-    File tmpFile = File.createTempFile(
-        "testQueryResults",
-        ""
-    );
-    InputEntity.CleanableFile queryResult = SqlEntity.openCleanableFile(
-        INVALID_SQL,
-        testUtils.getDerbyFirehoseConnector(),
-        mapper,
-        true,
-        tmpFile
-    );
-
-    Assert.assertTrue(tmpFile.exists());
   }
 
   @Test
   public void testFileDeleteOnInvalidQuery() throws IOException
   {
-    //The test parameters here are same as those used for testFailOnInvalidQuery().
-    //The only difference is that this test checks if the temporary file is deleted upon failure.
     derbyConnector = derbyConnectorRule.getConnector();
     SqlTestUtils testUtils = new SqlTestUtils(derbyConnector);
-    testUtils.createAndUpdateTable(TABLE_NAME_1, 1);
-    File tmpFile = File.createTempFile(
-        "testQueryResults",
-        ""
+    testUtils.createTableWithRows(TABLE_NAME_1, 1);
+    final File tmpFile = temporaryFolder.newFile("testQueryResults");
+    Assertions.assertTrue(tmpFile.exists());
+
+    Assertions.assertThrows(
+        IOException.class,
+        () -> SqlEntity.openCleanableFile(
+            INVALID_SQL,
+            testUtils.getDerbyInputSourceConnector(),
+            mapper,
+            true,
+            tmpFile
+        )
     );
-    try {
-      SqlEntity.openCleanableFile(
-          INVALID_SQL,
-          testUtils.getDerbyFirehoseConnector(),
-          mapper,
-          true,
-          tmpFile
-      );
-    }
-    // Lets catch the exception so as to test temporary file deletion.
-    catch (IOException e) {
-      Assert.assertFalse(tmpFile.exists());
-    }
+
+    // Verify that the temporary file is cleaned up
+    Assertions.assertFalse(tmpFile.exists());
   }
 }

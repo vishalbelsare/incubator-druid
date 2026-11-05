@@ -62,7 +62,7 @@ public class SingleStringInputDeferredEvaluationExpressionDimensionVectorSelecto
     }
     this.selector = selector;
     this.inputBinding = new StringLookupVectorInputBindings();
-    this.stringProcessor = expression.buildVectorized(inputBinding);
+    this.stringProcessor = expression.asVectorProcessor(inputBinding);
   }
 
   @Override
@@ -147,9 +147,9 @@ public class SingleStringInputDeferredEvaluationExpressionDimensionVectorSelecto
     }
 
     @Override
-    public <T> T[] getObjectVector(String name)
+    public Object[] getObjectVector(String name)
     {
-      return (T[]) currentValue;
+      return currentValue;
     }
 
     @Override

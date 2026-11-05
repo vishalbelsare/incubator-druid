@@ -22,7 +22,6 @@ package org.apache.druid.query.groupby.epinephelinae;
 import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import org.apache.druid.common.config.NullHandling;
 import org.apache.druid.data.input.MapBasedRow;
 import org.apache.druid.java.util.common.concurrent.Execs;
 import org.apache.druid.java.util.common.parsers.CloseableIterator;
@@ -32,10 +31,9 @@ import org.apache.druid.query.aggregation.CountAggregatorFactory;
 import org.apache.druid.query.aggregation.LongSumAggregatorFactory;
 import org.apache.druid.query.groupby.epinephelinae.Grouper.Entry;
 import org.apache.druid.testing.InitializedNullHandlingTest;
-import org.junit.Assert;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -44,16 +42,15 @@ import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 public class StreamingMergeSortedGrouperTest extends InitializedNullHandlingTest
 {
-  @Rule
-  public ExpectedException expectedException = ExpectedException.none();
 
   @Test
   public void testAggregate()
   {
-    final TestColumnSelectorFactory columnSelectorFactory = GrouperTestUtil.newColumnSelectorFactory();
+    final GroupByTestColumnSelectorFactory columnSelectorFactory = GrouperTestUtil.newColumnSelectorFactory();
     final StreamingMergeSortedGrouper<IntKey> grouper = newGrouper(columnSelectorFactory, 1024);
 
     columnSelectorFactory.setRow(new MapBasedRow(0, ImmutableMap.of("value", 10L)));
@@ -78,24 +75,27 @@ public class StreamingMergeSortedGrouperTest extends InitializedNullHandlingTest
     );
   }
 
-  @Test(timeout = 60_000L)
+  @Test
+  @Timeout(value = 60_000, unit = TimeUnit.MILLISECONDS)
   public void testEmptyIterator()
   {
-    final TestColumnSelectorFactory columnSelectorFactory = GrouperTestUtil.newColumnSelectorFactory();
+    final GroupByTestColumnSelectorFactory columnSelectorFactory = GrouperTestUtil.newColumnSelectorFactory();
     final StreamingMergeSortedGrouper<IntKey> grouper = newGrouper(columnSelectorFactory, 1024);
 
     grouper.finish();
 
-    Assert.assertTrue(!grouper.iterator(true).hasNext());
+    Assertions.assertFalse(grouper.iterator(true).hasNext());
   }
 
-  @Test(timeout = 60_000L)
+  @Test
+  @Timeout(value = 60_000, unit = TimeUnit.MILLISECONDS)
   public void testStreamingAggregateWithLargeBuffer() throws ExecutionException, InterruptedException
   {
     testStreamingAggregate(1024);
   }
 
-  @Test(timeout = 60_000L)
+  @Test
+  @Timeout(value = 60_000, unit = TimeUnit.MILLISECONDS)
   public void testStreamingAggregateWithMinimumBuffer() throws ExecutionException, InterruptedException
   {
     testStreamingAggregate(83);
@@ -104,7 +104,7 @@ public class StreamingMergeSortedGrouperTest extends InitializedNullHandlingTest
   private void testStreamingAggregate(int bufferSize) throws ExecutionException, InterruptedException
   {
     final ExecutorService exec = Execs.multiThreaded(2, "merge-sorted-grouper-test-%d");
-    final TestColumnSelectorFactory columnSelectorFactory = GrouperTestUtil.newColumnSelectorFactory();
+    final GroupByTestColumnSelectorFactory columnSelectorFactory = GrouperTestUtil.newColumnSelectorFactory();
     final StreamingMergeSortedGrouper<IntKey> grouper = newGrouper(columnSelectorFactory, bufferSize);
 
     final List<Entry<IntKey>> expected = new ArrayList<>(1024);
@@ -147,32 +147,29 @@ public class StreamingMergeSortedGrouperTest extends InitializedNullHandlingTest
   @Test
   public void testNotEnoughBuffer()
   {
-    expectedException.expect(IllegalStateException.class);
-    if (NullHandling.replaceWithDefault()) {
-      expectedException.expectMessage("Buffer[50] should be large enough to store at least three records[20]");
-    } else {
-      expectedException.expectMessage("Buffer[50] should be large enough to store at least three records[21]");
-    }
-
-    newGrouper(GrouperTestUtil.newColumnSelectorFactory(), 50);
+    IllegalStateException e = Assertions.assertThrows(
+        IllegalStateException.class,
+        () -> newGrouper(GrouperTestUtil.newColumnSelectorFactory(), 50)
+    );
+    Assertions.assertTrue(e.getMessage().contains("Buffer[50] should be large enough to store at least three records[21]"));
   }
 
   @Test
   public void testTimeout()
   {
-    expectedException.expect(QueryTimeoutException.class);
+    Assertions.assertThrows(QueryTimeoutException.class, () -> {
+      final GroupByTestColumnSelectorFactory columnSelectorFactory = GrouperTestUtil.newColumnSelectorFactory();
+      final StreamingMergeSortedGrouper<IntKey> grouper = newGrouper(columnSelectorFactory, 100);
 
-    final TestColumnSelectorFactory columnSelectorFactory = GrouperTestUtil.newColumnSelectorFactory();
-    final StreamingMergeSortedGrouper<IntKey> grouper = newGrouper(columnSelectorFactory, 100);
+      columnSelectorFactory.setRow(new MapBasedRow(0, ImmutableMap.of("value", 10L)));
+      grouper.aggregate(new IntKey(6));
 
-    columnSelectorFactory.setRow(new MapBasedRow(0, ImmutableMap.of("value", 10L)));
-    grouper.aggregate(new IntKey(6));
-
-    grouper.iterator();
+      grouper.iterator();
+    });
   }
 
   private StreamingMergeSortedGrouper<IntKey> newGrouper(
-      TestColumnSelectorFactory columnSelectorFactory,
+      GroupByTestColumnSelectorFactory columnSelectorFactory,
       int bufferSize
   )
   {

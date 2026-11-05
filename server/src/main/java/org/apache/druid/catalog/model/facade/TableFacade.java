@@ -19,10 +19,13 @@
 
 package org.apache.druid.catalog.model.facade;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.druid.catalog.model.ColumnSpec;
+import org.apache.druid.catalog.model.Columns;
 import org.apache.druid.catalog.model.ObjectFacade;
 import org.apache.druid.catalog.model.ResolvedTable;
 import org.apache.druid.catalog.model.TableSpec;
+import org.apache.druid.segment.column.ColumnType;
 
 import java.util.List;
 import java.util.Map;
@@ -54,5 +57,15 @@ public class TableFacade extends ObjectFacade
   public List<ColumnSpec> columns()
   {
     return spec().columns();
+  }
+
+  public static ColumnType druidType(ColumnSpec col)
+  {
+    return Columns.druidType(col);
+  }
+
+  public ObjectMapper jsonMapper()
+  {
+    return resolved.jsonMapper();
   }
 }

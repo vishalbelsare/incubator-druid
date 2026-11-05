@@ -27,18 +27,16 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
 import org.apache.druid.java.util.common.IAE;
 import org.apache.druid.segment.RowAdapter;
-import org.apache.druid.segment.SegmentReference;
 import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.column.RowSignature;
 
 import javax.annotation.Nullable;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -48,7 +46,7 @@ import java.util.stream.IntStream;
  * The rows are backed by an Iterable, which can be lazy or not. Lazy datasources will only be iterated if someone calls
  * {@link #getRows()} and iterates the result, or until someone calls {@link #getRowsAsList()}.
  */
-public class InlineDataSource implements DataSource
+public class InlineDataSource extends LeafDataSource
 {
   private final Iterable<Object[]> rows;
   private final RowSignature signature;
@@ -70,7 +68,7 @@ public class InlineDataSource implements DataSource
   private static InlineDataSource fromJson(
       @JsonProperty("columnNames") List<String> columnNames,
       @JsonProperty("columnTypes") List<ColumnType> columnTypes,
-      @JsonProperty("rows") List<Object[]> rows
+      @JsonProperty("rows") ArrayList<Object[]> rows
   )
   {
     Preconditions.checkNotNull(columnNames, "'columnNames' must be nonnull");
@@ -188,6 +186,7 @@ public class InlineDataSource implements DataSource
   @JsonProperty("rows")
   public List<Object[]> getRowsAsList()
   {
+    Iterable<Object[]> rows = getRows();
     return rows instanceof List ? ((List<Object[]>) rows) : Lists.newArrayList(rows);
   }
 
@@ -200,20 +199,9 @@ public class InlineDataSource implements DataSource
     return rows;
   }
 
-  @Override
-  public List<DataSource> getChildren()
+  public boolean rowsAreArrayList()
   {
-    return Collections.emptyList();
-  }
-
-  @Override
-  public DataSource withChildren(List<DataSource> children)
-  {
-    if (!children.isEmpty()) {
-      throw new IAE("Cannot accept children");
-    }
-
-    return this;
+    return rows instanceof ArrayList;
   }
 
   @Override
@@ -229,24 +217,9 @@ public class InlineDataSource implements DataSource
   }
 
   @Override
-  public boolean isConcrete()
+  public boolean isProcessable()
   {
     return true;
-  }
-
-  @Override
-  public Function<SegmentReference, SegmentReference> createSegmentMapFunction(
-      Query query,
-      AtomicLong cpuTimeAcc
-  )
-  {
-    return Function.identity();
-  }
-
-  @Override
-  public DataSource withUpdatedDataSource(DataSource newSource)
-  {
-    return newSource;
   }
 
   @Override

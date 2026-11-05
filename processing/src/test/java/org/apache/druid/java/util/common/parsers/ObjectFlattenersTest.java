@@ -1,0 +1,77 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+package org.apache.druid.java.util.common.parsers;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
+
+import java.util.Map;
+
+public class ObjectFlattenersTest
+{
+  private static final String SOME_JSON = "{\"foo\": null, \"bar\": 1}";
+
+  private static final ObjectFlatteners.FlattenerMaker FLATTENER_MAKER = new JSONFlattenerMaker(true, false);
+  private static final ObjectFlattener FLATTENER = ObjectFlatteners.create(
+      new JSONPathSpec(
+          true,
+          ImmutableList.of(new JSONPathFieldSpec(JSONPathFieldType.PATH, "extract", "$.bar"))
+      ),
+      FLATTENER_MAKER
+  );
+  private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+
+  @Test
+  public void testFlatten() throws JsonProcessingException
+  {
+    JsonNode node = OBJECT_MAPPER.readTree(SOME_JSON);
+    Map<String, Object> flat = FLATTENER.flatten(node);
+    Assertions.assertEquals(ImmutableSet.of("extract", "foo", "bar"), flat.keySet());
+    Assertions.assertFalse(flat.isEmpty());
+    Assertions.assertNull(flat.get("foo"));
+    Assertions.assertEquals(1L, flat.get("bar"));
+    Assertions.assertEquals(1L, flat.get("extract"));
+    Assertions.assertEquals("{\"extract\":1,\"foo\":null,\"bar\":1}", OBJECT_MAPPER.writeValueAsString(flat));
+  }
+
+  @Test
+  public void testToMap() throws JsonProcessingException
+  {
+    JsonNode node = OBJECT_MAPPER.readTree(SOME_JSON);
+    Map<String, Object> flat = FLATTENER.toMap(node);
+    Assertions.assertNull(flat.get("foo"));
+    Assertions.assertEquals(1, flat.get("bar"));
+  }
+
+  @Test
+  public void testToMapNull() throws JsonProcessingException
+  {
+    JsonNode node = OBJECT_MAPPER.readTree("null");
+    Map<String, Object> flat = FLATTENER.toMap(node);
+    Assertions.assertNull(FLATTENER_MAKER.toPlainJavaType(node));
+    Assertions.assertEquals(ImmutableMap.of(), flat);
+  }
+}

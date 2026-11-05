@@ -23,8 +23,8 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonTypeName;
 import com.fasterxml.jackson.databind.Module;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Lists;
 import nl.jqno.equalsverifier.EqualsVerifier;
 import org.apache.commons.dbcp2.BasicDataSource;
 import org.apache.druid.data.input.ColumnsFilter;
@@ -34,30 +34,29 @@ import org.apache.druid.data.input.InputRowListPlusRawValues;
 import org.apache.druid.data.input.InputRowSchema;
 import org.apache.druid.data.input.InputSourceReader;
 import org.apache.druid.data.input.InputSplit;
-import org.apache.druid.data.input.Row;
+import org.apache.druid.data.input.InputStats;
 import org.apache.druid.data.input.impl.DimensionsSpec;
+import org.apache.druid.data.input.impl.InputStatsImpl;
 import org.apache.druid.data.input.impl.TimestampSpec;
-import org.apache.druid.java.util.common.FileUtils;
-import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.parsers.CloseableIterator;
 import org.apache.druid.metadata.MetadataStorageConnectorConfig;
-import org.apache.druid.metadata.SQLFirehoseDatabaseConnector;
+import org.apache.druid.metadata.SQLInputSourceDatabaseConnector;
 import org.apache.druid.metadata.TestDerbyConnector;
 import org.apache.druid.segment.TestHelper;
 import org.apache.druid.server.initialization.JdbcAccessSecurityConfig;
+import org.apache.druid.testing.TemporaryFolderExtension;
 import org.easymock.EasyMock;
-import org.junit.AfterClass;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 import org.skife.jdbi.v2.DBI;
 
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Comparator;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -66,29 +65,25 @@ import java.util.stream.Stream;
 
 public class SqlInputSourceTest
 {
-  private static final List<File> FIREHOSE_TMP_DIRS = new ArrayList<>();
-  private final String TABLE_NAME_1 = "FOOS_TABLE_1";
-  private final String TABLE_NAME_2 = "FOOS_TABLE_2";
-
-  private final List<String> SQLLIST1 = ImmutableList.of("SELECT timestamp,a,b FROM FOOS_TABLE_1");
-  private final List<String> SQLLIST2 = ImmutableList.of(
-      "SELECT timestamp,a,b FROM FOOS_TABLE_1",
-      "SELECT timestamp,a,b FROM FOOS_TABLE_2"
-  );
+  private final String TABLE_1 = "FOOS_TABLE_1";
+  private final String TABLE_2 = "FOOS_TABLE_2";
 
   private static final InputRowSchema INPUT_ROW_SCHEMA = new InputRowSchema(
-      new TimestampSpec("timestamp", "auto", null),
+      TimestampSpec.DEFAULT,
       new DimensionsSpec(
           DimensionsSpec.getDefaultSchemas(Arrays.asList("timestamp", "a", "b"))
       ),
       ColumnsFilter.all()
   );
-  @Rule
+
+  @RegisterExtension
   public final TestDerbyConnector.DerbyConnectorRule derbyConnectorRule = new TestDerbyConnector.DerbyConnectorRule();
+  @RegisterExtension
+  public final TemporaryFolderExtension temporaryFolder = TemporaryFolderExtension.testCaseScoped();
   private final ObjectMapper mapper = TestHelper.makeSmileMapper();
   private TestDerbyConnector derbyConnector;
 
-  @Before
+  @BeforeEach
   public void setUp()
   {
     for (Module jacksonModule : new InputSourceModule().getJacksonModules()) {
@@ -96,55 +91,33 @@ public class SqlInputSourceTest
     }
   }
 
-  @AfterClass
-  public static void teardown() throws IOException
+  private File createInputSourceTmpDir(String dirSuffix) throws IOException
   {
-    for (File dir : FIREHOSE_TMP_DIRS) {
-      org.apache.commons.io.FileUtils.forceDelete(dir);
-    }
-  }
-
-  private void assertResult(List<Row> rows, List<String> sqls)
-  {
-    Assert.assertEquals(10 * sqls.size(), rows.size());
-    rows.sort(Comparator.comparing(Row::getTimestamp)
-                        .thenComparingInt(r -> Integer.valueOf(r.getDimension("a").get(0)))
-                        .thenComparingInt(r -> Integer.valueOf(r.getDimension("b").get(0))));
-    int rowCount = 0;
-    for (int i = 0; i < 10; i++) {
-      for (int j = 0; j < sqls.size(); j++) {
-        final Row row = rows.get(rowCount);
-        String timestampSt = StringUtils.format("2011-01-12T00:0%s:00.000Z", i);
-        Assert.assertEquals(timestampSt, row.getTimestamp().toString());
-        Assert.assertEquals(i, Integer.valueOf(row.getDimension("a").get(0)).intValue());
-        Assert.assertEquals(i, Integer.valueOf(row.getDimension("b").get(0)).intValue());
-        rowCount++;
-      }
-    }
-  }
-
-  private File createFirehoseTmpDir(String dirSuffix) throws IOException
-  {
-    final File firehoseTempDir = File.createTempFile(
-        SqlInputSourceTest.class.getSimpleName(),
-        dirSuffix
-    );
-    org.apache.commons.io.FileUtils.forceDelete(firehoseTempDir);
-    FileUtils.mkdirp(firehoseTempDir);
-    FIREHOSE_TMP_DIRS.add(firehoseTempDir);
-    return firehoseTempDir;
+    return temporaryFolder.newFolder(SqlInputSourceTest.class.getSimpleName() + dirSuffix);
   }
 
   @Test
   public void testSerde() throws IOException
   {
-    mapper.registerSubtypes(TestSerdeFirehoseConnector.class);
-    final SqlInputSourceTest.TestSerdeFirehoseConnector testSerdeFirehoseConnector = new SqlInputSourceTest.TestSerdeFirehoseConnector(
+    mapper.registerSubtypes(TestSerdeInputSourceConnector.class);
+    final TestSerdeInputSourceConnector serdeInputSourceConnector = new TestSerdeInputSourceConnector(
         new MetadataStorageConnectorConfig());
-    final SqlInputSource sqlInputSource = new SqlInputSource(SQLLIST1, true, testSerdeFirehoseConnector, mapper);
+    final SqlInputSource sqlInputSource =
+        new SqlInputSource(SqlTestUtils.selectFrom(TABLE_1), true, serdeInputSourceConnector, mapper);
     final String valueString = mapper.writeValueAsString(sqlInputSource);
     final SqlInputSource inputSourceFromJson = mapper.readValue(valueString, SqlInputSource.class);
-    Assert.assertEquals(sqlInputSource, inputSourceFromJson);
+    Assertions.assertEquals(sqlInputSource, inputSourceFromJson);
+  }
+
+  @Test
+  public void testGetTypes()
+  {
+    mapper.registerSubtypes(TestSerdeInputSourceConnector.class);
+    final TestSerdeInputSourceConnector serdeInputSourceConnector = new TestSerdeInputSourceConnector(
+        new MetadataStorageConnectorConfig());
+    final SqlInputSource sqlInputSource =
+        new SqlInputSource(SqlTestUtils.selectFrom(TABLE_1), true, serdeInputSourceConnector, mapper);
+    Assertions.assertEquals(Collections.singleton(SqlInputSource.TYPE_KEY), sqlInputSource.getTypes());
   }
 
   @Test
@@ -152,17 +125,26 @@ public class SqlInputSourceTest
   {
     derbyConnector = derbyConnectorRule.getConnector();
     SqlTestUtils testUtils = new SqlTestUtils(derbyConnector);
-    testUtils.createAndUpdateTable(TABLE_NAME_1, 10);
-    final File tempDir = createFirehoseTmpDir("testSingleSplit");
-    SqlInputSource sqlInputSource = new SqlInputSource(SQLLIST1, true, testUtils.getDerbyFirehoseConnector(), mapper);
+    final List<InputRow> expectedRows = testUtils.createTableWithRows(TABLE_1, 10);
+    final File tempDir = createInputSourceTmpDir("testSingleSplit");
+    final InputStats inputStats = new InputStatsImpl();
+
+    SqlInputSource sqlInputSource = new SqlInputSource(
+        SqlTestUtils.selectFrom(TABLE_1),
+        true,
+        testUtils.getDerbyInputSourceConnector(),
+        mapper
+    );
     InputSourceReader sqlReader = sqlInputSource.fixedFormatReader(INPUT_ROW_SCHEMA, tempDir);
-    CloseableIterator<InputRow> resultIterator = sqlReader.read();
-    final List<Row> rows = new ArrayList<>();
-    while (resultIterator.hasNext()) {
-      rows.add(resultIterator.next());
-    }
-    assertResult(rows, SQLLIST1);
-    testUtils.dropTable(TABLE_NAME_1);
+    CloseableIterator<InputRow> resultIterator = sqlReader.read(inputStats);
+    final List<InputRow> rows = Lists.newArrayList(resultIterator);
+
+    // Records for each split are written to a temp file as a json array
+    // file size = 1B (array open char) + 10 records * 60B (including trailing comma)
+    Assertions.assertEquals(601, inputStats.getProcessedBytes());
+    Assertions.assertEquals(expectedRows, rows);
+
+    testUtils.dropTable(TABLE_1);
   }
 
 
@@ -171,19 +153,27 @@ public class SqlInputSourceTest
   {
     derbyConnector = derbyConnectorRule.getConnector();
     SqlTestUtils testUtils = new SqlTestUtils(derbyConnector);
-    testUtils.createAndUpdateTable(TABLE_NAME_1, 10);
-    testUtils.createAndUpdateTable(TABLE_NAME_2, 10);
-    final File tempDir = createFirehoseTmpDir("testMultipleSplit");
-    SqlInputSource sqlInputSource = new SqlInputSource(SQLLIST2, true, testUtils.getDerbyFirehoseConnector(), mapper);
+    final List<InputRow> expectedRowsTable1 = testUtils.createTableWithRows(TABLE_1, 10);
+    final List<InputRow> expectedRowsTable2 = testUtils.createTableWithRows(TABLE_2, 10);
+    final File tempDir = createInputSourceTmpDir("testMultipleSplit");
+    SqlInputSource sqlInputSource = new SqlInputSource(
+        SqlTestUtils.selectFrom(TABLE_1, TABLE_2),
+        true,
+        testUtils.getDerbyInputSourceConnector(),
+        mapper
+    );
+
+    final InputStats inputStats = new InputStatsImpl();
     InputSourceReader sqlReader = sqlInputSource.fixedFormatReader(INPUT_ROW_SCHEMA, tempDir);
-    CloseableIterator<InputRow> resultIterator = sqlReader.read();
-    final List<Row> rows = new ArrayList<>();
-    while (resultIterator.hasNext()) {
-      rows.add(resultIterator.next());
-    }
-    assertResult(rows, SQLLIST2);
-    testUtils.dropTable(TABLE_NAME_1);
-    testUtils.dropTable(TABLE_NAME_2);
+    CloseableIterator<InputRow> resultIterator = sqlReader.read(inputStats);
+    final List<InputRow> rows = Lists.newArrayList(resultIterator);
+
+    Assertions.assertEquals(expectedRowsTable1, rows.subList(0, 10));
+    Assertions.assertEquals(expectedRowsTable2, rows.subList(10, 20));
+    Assertions.assertEquals(1202, inputStats.getProcessedBytes());
+
+    testUtils.dropTable(TABLE_1);
+    testUtils.dropTable(TABLE_2);
   }
 
   @Test
@@ -191,11 +181,13 @@ public class SqlInputSourceTest
   {
     derbyConnector = derbyConnectorRule.getConnector();
     SqlTestUtils testUtils = new SqlTestUtils(derbyConnector);
-    SqlInputSource sqlInputSource = new SqlInputSource(SQLLIST2, true, testUtils.getDerbyFirehoseConnector(), mapper);
+    final List<String> sqls = SqlTestUtils.selectFrom(TABLE_1, TABLE_2);
+    SqlInputSource sqlInputSource =
+        new SqlInputSource(sqls, true, testUtils.getDerbyInputSourceConnector(), mapper);
     InputFormat inputFormat = EasyMock.createMock(InputFormat.class);
     Stream<InputSplit<String>> sqlSplits = sqlInputSource.createSplits(inputFormat, null);
-    Assert.assertEquals(SQLLIST2, sqlSplits.map(InputSplit::get).collect(Collectors.toList()));
-    Assert.assertEquals(2, sqlInputSource.estimateNumSplits(inputFormat, null));
+    Assertions.assertEquals(sqls, sqlSplits.map(InputSplit::get).collect(Collectors.toList()));
+    Assertions.assertEquals(2, sqlInputSource.estimateNumSplits(inputFormat, null));
   }
 
   @Test
@@ -203,23 +195,82 @@ public class SqlInputSourceTest
   {
     derbyConnector = derbyConnectorRule.getConnector();
     SqlTestUtils testUtils = new SqlTestUtils(derbyConnector);
-    testUtils.createAndUpdateTable(TABLE_NAME_1, 10);
+    final List<InputRow> expectedRows = testUtils.createTableWithRows(TABLE_1, 10);
     try {
-      final File tempDir = createFirehoseTmpDir("testSingleSplit");
-      SqlInputSource sqlInputSource = new SqlInputSource(SQLLIST1, true, testUtils.getDerbyFirehoseConnector(), mapper);
+      final File tempDir = createInputSourceTmpDir("testSingleSplit");
+      SqlInputSource sqlInputSource =
+          new SqlInputSource(SqlTestUtils.selectFrom(TABLE_1), true, testUtils.getDerbyInputSourceConnector(), mapper);
       InputSourceReader sqlReader = sqlInputSource.fixedFormatReader(INPUT_ROW_SCHEMA, tempDir);
       CloseableIterator<InputRowListPlusRawValues> resultIterator = sqlReader.sample();
-      final List<InputRowListPlusRawValues> rows = new ArrayList<>();
+      final List<InputRow> rows = new ArrayList<>();
       while (resultIterator.hasNext()) {
         InputRowListPlusRawValues row = resultIterator.next();
-        Assert.assertNull(row.getParseException());
-        rows.add(row);
+        Assertions.assertNull(row.getParseException());
+        rows.addAll(row.getInputRows());
       }
-      assertResult(rows.stream().flatMap(r -> r.getInputRows().stream()).collect(Collectors.toList()), SQLLIST1);
+      Assertions.assertEquals(expectedRows, rows);
     }
     finally {
-      testUtils.dropTable(TABLE_NAME_1);
+      testUtils.dropTable(TABLE_1);
     }
+  }
+
+  @Test
+  public void testConnectorValidationInvalidUri()
+  {
+    derbyConnector = derbyConnectorRule.getConnector();
+    Throwable t = Assertions.assertThrows(
+        IllegalArgumentException.class,
+        () -> new SqlTestUtils(
+            derbyConnector,
+            new MetadataStorageConnectorConfig()
+            {
+              @Override
+              public String getConnectURI()
+              {
+                return "";
+              }
+            }
+        )
+    );
+    Assertions.assertEquals("connectURI cannot be null or empty", t.getMessage());
+  }
+
+  @Test
+  public void testConnectorValidationAllowedProperties()
+  {
+    derbyConnector = derbyConnectorRule.getConnector();
+    Throwable t = Assertions.assertThrows(
+        IllegalArgumentException.class,
+        () -> new SqlTestUtils(
+            derbyConnector,
+            new MetadataStorageConnectorConfig(),
+            new JdbcAccessSecurityConfig()
+        )
+    );
+    Assertions.assertEquals(
+        "The property [user] is not in the allowed list [useSSL, requireSSL, sslMode, ssl, sslmode]",
+        t.getMessage()
+    );
+  }
+
+  @Test
+  public void testConnectorValidationSkipAllowedProperties()
+  {
+    derbyConnector = derbyConnectorRule.getConnector();
+    SqlTestUtils testUtils = new SqlTestUtils(
+        derbyConnector,
+        new MetadataStorageConnectorConfig(),
+        new JdbcAccessSecurityConfig()
+        {
+          @Override
+          public boolean isEnforceAllowedProperties()
+          {
+            return false;
+          }
+        }
+    );
+    Assertions.assertNotNull(testUtils);
   }
 
   @Test
@@ -232,18 +283,19 @@ public class SqlInputSourceTest
                       new ObjectMapper()
                   )
                   .withIgnoredFields("objectMapper")
-                  .withNonnullFields("sqls", "sqlFirehoseDatabaseConnector")
+                  .withNonnullFields("sqls", "sqlInputSourceDatabaseConnector")
                   .usingGetClass()
                   .verify();
   }
 
+
   @JsonTypeName("test")
-  private static class TestSerdeFirehoseConnector extends SQLFirehoseDatabaseConnector
+  private static class TestSerdeInputSourceConnector extends SQLInputSourceDatabaseConnector
   {
     private final DBI dbi;
     private final MetadataStorageConnectorConfig metadataStorageConnectorConfig;
 
-    private TestSerdeFirehoseConnector(
+    private TestSerdeInputSourceConnector(
         @JsonProperty("connectorConfig") MetadataStorageConnectorConfig metadataStorageConnectorConfig
     )
     {
@@ -279,7 +331,7 @@ public class SqlInputSourceTest
       if (o == null || getClass() != o.getClass()) {
         return false;
       }
-      TestSerdeFirehoseConnector that = (TestSerdeFirehoseConnector) o;
+      TestSerdeInputSourceConnector that = (TestSerdeInputSourceConnector) o;
       return metadataStorageConnectorConfig.equals(that.metadataStorageConnectorConfig);
     }
 

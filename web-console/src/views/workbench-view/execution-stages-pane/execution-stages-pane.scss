@@ -16,11 +16,29 @@
  * limitations under the License.
  */
 
-@import '../../../variables';
+@use '../../../variables' as *;
 
 .execution-stages-pane {
-  .rt-td {
+  .ct-td {
     cursor: default;
+  }
+
+  .graph-cell {
+    position: relative;
+
+    & > svg {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+
+      line {
+        stroke: $light-gray5;
+      }
+
+      circle {
+        fill: $light-gray5;
+      }
+    }
   }
 
   .stage {
@@ -39,6 +57,17 @@
     margin-left: 3px;
     margin-right: 1px;
     opacity: 0.6;
+  }
+
+  .detail-line {
+    font-style: italic;
+    opacity: 0.6;
+  }
+
+  .error-warning {
+    position: absolute;
+    top: 7px;
+    right: 3px;
   }
 
   .counter-spacer {
@@ -71,11 +100,6 @@
       text-align: right;
       padding-right: 15px;
     }
-
-    .sort-percent {
-      display: inline-block;
-      margin-left: 20px;
-    }
   }
 
   .execution-stage-detail-pane {
@@ -93,12 +117,64 @@
     }
 
     .detail-counters-for-partitions,
-    .detail-counters-for-workers {
+    .detail-counters-for-workers,
+    .detail-counters-for-sort {
       display: inline-block;
       margin-left: 10px;
       margin-top: 10px;
       vertical-align: top;
       background: $dark-gray3;
+    }
+
+    .detail-counters-for-sort {
+      .count {
+        font-style: italic;
+        opacity: 0.8;
+      }
+    }
+  }
+
+  .cpu-label {
+    display: inline-block;
+    width: 140px;
+  }
+
+  .cpu-counter {
+    display: inline-block;
+    width: 80px;
+  }
+
+  .rows-label {
+    display: inline-block;
+    width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: bottom;
+  }
+
+  .storage-label {
+    display: inline-block;
+    width: 55px;
+  }
+
+  .storage-used {
+    opacity: 0.7;
+  }
+
+  .timing-value {
+    position: relative;
+    height: 100%;
+    padding: 10px 5px;
+    margin-right: 1px; // This is to allow to show a 1px wide .timing-bar bar right at "left: 99.9%"
+
+    .timing-bar {
+      position: absolute;
+      top: 1px;
+      height: 3px;
+      border-radius: 2px;
+      background: $druid-brand;
+      opacity: 0.8;
     }
   }
 }

@@ -16,14 +16,15 @@
  * limitations under the License.
  */
 
-import { Button, Intent, Position, TextArea } from '@blueprintjs/core';
+import type { Intent } from '@blueprintjs/core';
+import { Button, PopoverNext, TextArea } from '@blueprintjs/core';
 import { IconNames } from '@blueprintjs/icons';
-import { Popover2 } from '@blueprintjs/popover2';
 import classNames from 'classnames';
 import React, { useState } from 'react';
 
 import { compact } from '../../utils';
-import { Suggestion, SuggestionMenu } from '../suggestion-menu/suggestion-menu';
+import type { Suggestion } from '../suggestion-menu/suggestion-menu';
+import { SuggestionMenu } from '../suggestion-menu/suggestion-menu';
 
 import './array-input.scss';
 
@@ -68,20 +69,22 @@ export const ArrayInput = React.memo(function ArrayInput(props: ArrayInputProps)
         onChange={handleChange}
         onBlur={() => setIntermediateValue(undefined)}
         placeholder={placeholder}
-        large={large}
+        size={large ? 'large' : undefined}
         disabled={disabled}
         intent={intent}
         fill
       />
       {suggestions && (
-        <Popover2
+        <PopoverNext
           className="suggestion-button"
           content={<SuggestionMenu suggestions={suggestions} onSuggest={handleSuggestionSelect} />}
-          position={Position.BOTTOM_RIGHT}
+          placement="bottom-end"
           autoFocus={false}
+          lazy
+          shouldReturnFocusOnClose={false}
         >
-          <Button icon={IconNames.PLUS} minimal />
-        </Popover2>
+          <Button icon={IconNames.PLUS} variant="minimal" />
+        </PopoverNext>
       )}
     </div>
   );

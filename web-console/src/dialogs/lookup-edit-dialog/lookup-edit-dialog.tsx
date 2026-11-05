@@ -27,8 +27,12 @@ import {
 } from '@blueprintjs/core';
 import React, { useState } from 'react';
 
-import { AutoForm, FormJsonSelector, FormJsonTabs, JsonInput } from '../../components';
-import { isLookupInvalid, LOOKUP_FIELDS, LookupSpec } from '../../druid-models';
+import type { FormJsonTabs } from '../../components';
+import { AutoForm, FormJsonSelector, JsonInput } from '../../components';
+import type { LookupSpec } from '../../druid-models';
+import { isLookupInvalid, LOOKUP_FIELDS } from '../../druid-models';
+
+import { LOOKUP_COMPLETIONS } from './lookup-completions';
 
 import './lookup-edit-dialog.scss';
 
@@ -79,7 +83,7 @@ export const LookupEditDialog = React.memo(function LookupEditDialog(props: Look
         <FormGroup label="Name">
           <InputGroup
             value={lookupId}
-            onChange={(e: any) => onChange('id', e.target.value)}
+            onChange={(e: any) => onChange('id', e.target.value.trimStart())}
             intent={lookupId ? Intent.NONE : Intent.PRIMARY}
             disabled={isEdit}
             placeholder="Enter the lookup name"
@@ -112,14 +116,20 @@ export const LookupEditDialog = React.memo(function LookupEditDialog(props: Look
             placeholder="Enter the lookup version"
             rightElement={
               <Button
-                minimal
+                variant="minimal"
                 text="Set to current ISO time"
                 onClick={() => onChange('version', new Date().toISOString())}
               />
             }
           />
         </FormGroup>
-        <FormJsonSelector tab={currentTab} onChange={setCurrentTab} />
+        <FormJsonSelector
+          tab={currentTab}
+          onChange={t => {
+            setJsonError(undefined);
+            setCurrentTab(t);
+          }}
+        />
         {currentTab === 'form' ? (
           <AutoForm
             fields={LOOKUP_FIELDS}
@@ -132,12 +142,10 @@ export const LookupEditDialog = React.memo(function LookupEditDialog(props: Look
           <JsonInput
             value={lookupSpec}
             height="80vh"
-            onChange={m => {
-              onChange('spec', m);
-              setJsonError(undefined);
-            }}
-            onError={setJsonError}
+            onChange={m => onChange('spec', m)}
+            setError={setJsonError}
             issueWithValue={spec => AutoForm.issueWithModel(spec, LOOKUP_FIELDS)}
+            jsonCompletions={LOOKUP_COMPLETIONS}
           />
         )}
       </div>

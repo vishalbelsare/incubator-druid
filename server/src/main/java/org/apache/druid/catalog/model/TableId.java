@@ -36,7 +36,7 @@ public class TableId
   public static final String CATALOG_SCHEMA = "INFORMATION_SCHEMA";
 
   // Extra for MSQE
-  public static final String EXTERNAL_SCHEMA = "extern";
+  public static final String EXTERNAL_SCHEMA = "ext";
 
   // Extra for views
   public static final String VIEW_SCHEMA = "view";
@@ -83,6 +83,11 @@ public class TableId
   public String sqlName()
   {
     return StringUtils.format("\"%s\".\"%s\"", schema, name);
+  }
+
+  public String unquoted()
+  {
+    return StringUtils.format("%s.%s", schema, name);
   }
 
   @Override
